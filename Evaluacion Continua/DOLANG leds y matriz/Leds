@@ -1,0 +1,137 @@
+.include "m328pdef.inc"
+
+.org 0x0000
+    rjmp Inicio
+.org 0x0002
+    rjmp RSI_0
+
+.dseg
+modo:   .byte 1
+btnf:   .byte 1
+
+.cseg
+
+Inicio:
+    ldi     r16, 0b00111111   ; PB0..PB5 salida
+    out     DDRB, r16
+    in      r17, DDRD
+    ori     r17, (1<<PD6)|(1<<PD7)
+    out     DDRD, r17
+    sbi     PORTD, PD2        ; pull-up en D2
+    ldi     r18, HIGH(RAMEND) ; SP alto
+    out     SPH, r18
+    ldi     r18, LOW(RAMEND)  ; SP bajo
+    out     SPL, r18
+    clr     r0
+    out     PORTB, r0
+    out     PORTD, r0
+    sts     modo, r0
+    sts     btnf, r0
+    ldi     r20, (1<<ISC01)   ; INT0 flanco ↓
+    sts     EICRA, r20
+    ldi     r19, (1<<INT0)    ; habilita INT0
+    out     EIMSK, r19
+    ldi     r24, (1<<INTF0)   ; limpia flag
+    out     EIFR, r24
+    sei
+
+Loop:
+    lds     r16, modo
+    cpi     r16, 0
+    breq    _soloUno
+    rcall   SecuenciaAcumulada
+    rjmp    _chkBtn
+_soloUno:
+    rcall   SecuenciaSoloUno
+_chkBtn:
+    lds     r16, btnf
+    tst     r16
+    breq    Loop
+    sts     btnf, r0
+    lds     r17, modo
+    ldi     r24, 1
+    eor     r17, r24           ; alterna modo
+    sts     modo, r17
+    cbi     EIMSK, INT0
+_waitRel:
+    sbis    PIND, PD2
+    rjmp    _waitRel
+    ldi     r24, 0x40
+_db1:
+    dec     r24
+    brne    _db1
+    sbi     EIMSK, INT0
+    rjmp    Loop
+
+RSI_0:
+    ldi     r16, 1
+    sts     btnf, r16
+    ldi     r24, (1<<INTF0)
+    out     EIFR, r24
+    reti
+
+SecuenciaSoloUno:
+    clr     r0
+    out     PORTB, r0
+    out     PORTD, r0
+    ldi     r21, (1 << PD6)
+    out     PORTD, r21
+    rcall   Mseg
+    ldi     r21, (1 << PD7)
+    out     PORTD, r21
+    rcall   Mseg
+    clr     r21
+    out     PORTD, r21
+    ldi     r20, 0x01
+Ciclo_PORTB:
+    out     PORTB, r20
+    rcall   Mseg
+    cpi     r20, 0x20
+    breq    _finSoloUno
+    lsl     r20
+    rjmp    Ciclo_PORTB
+_finSoloUno:
+    clr     r20
+    out     PORTB, r20
+    ret
+
+SecuenciaAcumulada:
+    clr     r0
+    out     PORTB, r0
+    out     PORTD, r0
+    ldi     r21, (1<<PD6)
+    out     PORTD, r21
+    rcall   Mseg
+    ori     r21, (1<<PD7)
+    out     PORTD, r21
+    rcall   Mseg
+    clr     r22
+    ldi     r23, 0x01
+BuclePB:
+    or      r22, r23
+    out     PORTB, r22
+    rcall   Mseg
+    cpi     r23, 0x20
+    breq    _finAcum
+    lsl     r23
+    rjmp    BuclePB
+_finAcum:
+    clr     r22
+    out     PORTB, r22
+    clr     r21
+    out     PORTD, r21
+    ret
+
+Mseg:
+    ldi     r25, 21
+    ldi     r26, 75
+    ldi     r27, 189
+L1:
+    dec     r27
+    brne    L1
+    dec     r26
+    brne    L1
+    dec     r25
+    brne    L1
+    nop
+    ret
