@@ -25,6 +25,7 @@ ptrD_hi:    .byte 1
 
 .cseg
 RESET:
+
     ldi  r16, HIGH(RAMEND)
     out  SPH, r16
     ldi  r16, LOW(RAMEND)
@@ -47,10 +48,12 @@ RESET:
     ldi  r16, 0b00110000
     out  PORTD, r16
 
+
     clr  r16
     sts  col_idx, r16
     sts  fig_idx, r16         
 
+ 
     ldi  r16, (1<<WGM21)
     sts  TCCR2A, r16
     ldi  r16, (1<<CS22)|(1<<CS20)
@@ -76,17 +79,21 @@ MAIN:
     rjmp MAIN
 
 
-
-; 0) Cara feliz
 cara_feliz_B: .db 0x27,0x25,0x25,0x35,0x25,0x2D,0x25,0x25
 cara_feliz_C: .db 0x0D,0x0D,0x05,0x09,0x0B,0x05,0x0D,0x0D
 cara_feliz_D: .db 0x30,0x38,0x24,0x30,0x30,0x20,0xB0,0x70
 
-; 1) Cara triste
 cara_triste_B: .db 0x27,0x25,0x25,0x35,0x25,0x2D,0x25,0x25
 cara_triste_C: .db 0x0D,0x0D,0x01,0x0D,0x0F,0x01,0x0D,0x0D
 cara_triste_D: .db 0x30,0x38,0x34,0x20,0x20,0x30,0xB0,0x70
 
+corazon_B: .db 0x26,0x00,0x20,0x31,0x20,0x08,0x26,0x25
+corazon_C: .db 0x05,0x05,0x01,0x00,0x03,0x05,0x05,0x0D
+corazon_D: .db 0x30,0x18,0x04,0x00,0x00,0x10,0xB0,0x70
+
+rombo_B: .db 0x27,0x21,0x25,0x34,0x25,0x29,0x25,0x25
+rombo_C: .db 0x0D,0x0D,0x05,0x09,0x07,0x0D,0x0D,0x0D
+rombo_D: .db 0x30,0x38,0x14,0x30,0x10,0x30,0xB0,0x70
 
 alien_B: .db 0x23,0x21,0x24,0x10,0x00,0x2C,0x21,0x21
 alien_C: .db 0x0C,0x05,0x00,0x05,0x07,0x00,0x05,0x0C
@@ -100,14 +107,25 @@ UpdateFigurePointers:
 
     lds  r16, fig_idx
 
-    ; 0 -> feliz | 1 -> triste | 2 -> alien
+
     cpi  r16, 0
     brne UF_L1
     rjmp set_feliz
 UF_L1:
+    
     cpi  r16, 1
-    brne UF_ELSE
+    brne UF_L2
     rjmp set_triste
+UF_L2:
+  
+    cpi  r16, 2
+    brne UF_L3
+    rjmp set_corazon
+UF_L3:
+   
+    cpi  r16, 3
+    brne UF_ELSE
+    rjmp set_rombo
 UF_ELSE:
     rjmp set_alien
 
@@ -141,6 +159,36 @@ set_triste:
     sts  ptrD_hi, r31
     rjmp UF_DONE
 
+set_corazon:
+    ldi  r30, LOW(corazon_B*2)
+    ldi  r31, HIGH(corazon_B*2)
+    sts  ptrB_lo, r30
+    sts  ptrB_hi, r31
+    ldi  r30, LOW(corazon_C*2)
+    ldi  r31, HIGH(corazon_C*2)
+    sts  ptrC_lo, r30
+    sts  ptrC_hi, r31
+    ldi  r30, LOW(corazon_D*2)
+    ldi  r31, HIGH(corazon_D*2)
+    sts  ptrD_lo, r30
+    sts  ptrD_hi, r31
+    rjmp UF_DONE
+
+set_rombo:
+    ldi  r30, LOW(rombo_B*2)
+    ldi  r31, HIGH(rombo_B*2)
+    sts  ptrB_lo, r30
+    sts  ptrB_hi, r31
+    ldi  r30, LOW(rombo_C*2)
+    ldi  r31, HIGH(rombo_C*2)
+    sts  ptrC_lo, r30
+    sts  ptrC_hi, r31
+    ldi  r30, LOW(rombo_D*2)
+    ldi  r31, HIGH(rombo_D*2)
+    sts  ptrD_lo, r30
+    sts  ptrD_hi, r31
+    rjmp UF_DONE
+
 set_alien:
     ldi  r30, LOW(alien_B*2)
     ldi  r31, HIGH(alien_B*2)
@@ -161,6 +209,7 @@ UF_DONE:
     pop  r16
     ret
 
+
 ISR_TIMER2_COMPA:
     push r16
     in   r16, SREG
@@ -170,7 +219,7 @@ ISR_TIMER2_COMPA:
     push r31
 
     lds  r16, col_idx
-
+  
     lds  r30, ptrB_lo
     lds  r31, ptrB_hi
     add  r30, r16
@@ -213,14 +262,13 @@ ISR_TIMER1_COMPA:
     push r16
     lds  r16, fig_idx
     inc  r16
-    ; Ahora solo 3 figuras: 0..2
-    cpi  r16, 3
+    cpi  r16, 5
     brlo FIG_OK
     clr  r16
 FIG_OK:
     sts  fig_idx, r16
     rcall UpdateFigurePointers
-    pop  r16
+	pop  r16
     out  SREG, r16
     pop  r16
     reti
