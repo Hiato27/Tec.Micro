@@ -4,13 +4,13 @@
 
 .cseg
 .org 0x0000
-    rjmp RESET
+    rjmp RESET	; vector de reset
 
 .org OC2Aaddr
-    rjmp ISR_TIMER2_COMPA
+    rjmp ISR_TIMER2_COMPA	; Timer2: multiplexado columnas
 
 .org OC1Aaddr
-    rjmp ISR_TIMER1_COMPA
+    rjmp ISR_TIMER1_COMPA	; Timer1: cambio de figura
 
 
 .dseg
@@ -26,57 +26,57 @@ ptrD_hi:    .byte 1
 .cseg
 RESET:
 
-    ldi  r16, HIGH(RAMEND)
+    ldi  r16, HIGH(RAMEND)	; SP <- RAMEND (alto)
     out  SPH, r16
-    ldi  r16, LOW(RAMEND)
+    ldi  r16, LOW(RAMEND)	; SP <- RAMEND (bajo)
     out  SPL, r16
-    clr  r1
+    clr  r1					; r1=0 por convención
 
 
     ldi  r16, 0b00111111
-    out  DDRB, r16
+    out  DDRB, r16			; PB0..PB5 salidas (filas altas)
     ldi  r16, 0b00001111
-    out  DDRC, r16
+    out  DDRC, r16			; PC0..PC3 salidas (filas bajas)
     ldi  r16, 0b11111100
-    out  DDRD, r16
+    out  DDRD, r16			; PD2..PD7 salidas (columnas)
 
 
     ldi  r16, 0b00100101
-    out  PORTB, r16
+    out  PORTB, r16			; estado inicial filas (reposo)
     ldi  r16, 0b00001101
-    out  PORTC, r16
+    out  PORTC, r16			; estado inicial filas (reposo)
     ldi  r16, 0b00110000
-    out  PORTD, r16
+    out  PORTD, r16			; columnas desactivadas
 
 
     clr  r16
-    sts  col_idx, r16
-    sts  fig_idx, r16         
+    sts  col_idx, r16		; col = 0
+    sts  fig_idx, r16       ; fig = 0  
 
  
     ldi  r16, (1<<WGM21)
-    sts  TCCR2A, r16
+    sts  TCCR2A, r16		; Timer2 CTC
     ldi  r16, (1<<CS22)|(1<<CS20)
-    sts  TCCR2B, r16
+    sts  TCCR2B, r16		; prescaler 128
     ldi  r16, 249
-    sts  OCR2A, r16
+    sts  OCR2A, r16			; ISR a 500 Hz
     ldi  r16, (1<<OCIE2A)
-    sts  TIMSK2, r16
+    sts  TIMSK2, r16		; habilita ISR OCR2A
 
     ldi  r16, HIGH(46874)
     sts  OCR1AH, r16
     ldi  r16, LOW(46874)
-    sts  OCR1AL, r16
+    sts  OCR1AL, r16		; ~3 s con presc 1024
     ldi  r16, (1<<WGM12) | (1<<CS12) | (1<<CS10)
-    sts  TCCR1B, r16
+    sts  TCCR1B, r16		; Timer1 CTC
     ldi  r16, (1<<OCIE1A)
-    sts  TIMSK1, r16
+    sts  TIMSK1, r16		; habilita ISR OCR1A
 
-    rcall UpdateFigurePointers
-    sei
+    rcall UpdateFigurePointers		; punteros a tablas según fig
+    sei			 ; habilita interrupciones
 
 MAIN:
-    rjmp MAIN
+    rjmp MAIN	; loop vacío (todo en ISR)
 
 
 cara_feliz_B: .db 0x27,0x25,0x25,0x35,0x25,0x2D,0x25,0x25
@@ -105,7 +105,7 @@ UpdateFigurePointers:
     push r30
     push r31
 
-    lds  r16, fig_idx
+    lds  r16, fig_idx		; lee figura actual
 
 
     cpi  r16, 0
@@ -218,33 +218,33 @@ ISR_TIMER2_COMPA:
     push r30
     push r31
 
-    lds  r16, col_idx
+    lds  r16, col_idx		; columna actual
   
     lds  r30, ptrB_lo
     lds  r31, ptrB_hi
     add  r30, r16
     adc  r31, r1
     lpm  r17, Z
-    out  PORTB, r17
+    out  PORTB, r17			; patrón filas altas
 
     lds  r30, ptrC_lo
     lds  r31, ptrC_hi
     add  r30, r16
     adc  r31, r1
     lpm  r17, Z
-    out  PORTC, r17
+    out  PORTC, r17			; patrón filas bajas
 
     lds  r30, ptrD_lo
     lds  r31, ptrD_hi
     add  r30, r16
     adc  r31, r1
     lpm  r17, Z
-    out  PORTD, r17
+    out  PORTD, r17			; activa columna
 
     inc  r16
     cpi  r16, 8
     brlo COL_OK
-    clr  r16
+    clr  r16				; vuelve a 0
 COL_OK:
     sts  col_idx, r16
     pop  r31
@@ -262,13 +262,14 @@ ISR_TIMER1_COMPA:
     push r16
     lds  r16, fig_idx
     inc  r16
-    cpi  r16, 5
+    cpi  r16, 5				; 5 figuras (0..4)
     brlo FIG_OK
     clr  r16
 FIG_OK:
-    sts  fig_idx, r16
-    rcall UpdateFigurePointers
+    sts  fig_idx, r16		; guarda nueva figura
+    rcall UpdateFigurePointers		; refresca punteros
 	pop  r16
     out  SREG, r16
     pop  r16
     reti
+
