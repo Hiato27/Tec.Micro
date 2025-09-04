@@ -1,137 +1,182 @@
+
+; ATmega328P @ 16 MHz (Arduino Uno)
+; BUCLE AUTOMÁTICO de 3 secuencias :
+;   1) Desplazamiento 1 LED Izquierda a Derecha (pin 13 al pin 6)
+;   2) Secuencial Izquierda a Derecha acumulando (pin 13 añ pin 6)
+;   3) Extremos al Centro (en pares) y vuelta
+; Pines LED (izquierda a derecha):
+;   13 PB5, 12 PB4, 11 PB3, 10 PB2, 9 PB1, 8 PB0, 7 PD7, 6 PD6
+
+
 .include "m328pdef.inc"
 
-.org 0x0000
-    rjmp Inicio
-.org 0x0002
-    rjmp RSI_0
-
-.dseg
-modo:   .byte 1
-btnf:   .byte 1
-
 .cseg
+.org 0x0000
+    rjmp RESET
 
-Inicio:
-    ldi     r16, 0b00111111   ; PB0..PB5 salida
-    out     DDRB, r16
-    in      r17, DDRD
-    ori     r17, (1<<PD6)|(1<<PD7)
-    out     DDRD, r17
-    sbi     PORTD, PD2        ; pull-up en D2
-    ldi     r18, HIGH(RAMEND) ; SP alto
-    out     SPH, r18
-    ldi     r18, LOW(RAMEND)  ; SP bajo
-    out     SPL, r18
-    clr     r0
-    out     PORTB, r0
-    out     PORTD, r0
-    sts     modo, r0
-    sts     btnf, r0
-    ldi     r20, (1<<ISC01)   ; INT0 flanco ↓
-    sts     EICRA, r20
-    ldi     r19, (1<<INT0)    ; habilita INT0
-    out     EIMSK, r19
-    ldi     r24, (1<<INTF0)   ; limpia flag
-    out     EIFR, r24
-    sei
 
-Loop:
-    lds     r16, modo
-    cpi     r16, 0
-    breq    _soloUno
-    rcall   SecuenciaAcumulada
-    rjmp    _chkBtn
-_soloUno:
-    rcall   SecuenciaSoloUno
-_chkBtn:
-    lds     r16, btnf
-    tst     r16
-    breq    Loop
-    sts     btnf, r0
-    lds     r17, modo
-    ldi     r24, 1
-    eor     r17, r24           ; alterna modo
-    sts     modo, r17
-    cbi     EIMSK, INT0
-_waitRel:
-    sbis    PIND, PD2
-    rjmp    _waitRel
-    ldi     r24, 0x40
-_db1:
-    dec     r24
-    brne    _db1
-    sbi     EIMSK, INT0
-    rjmp    Loop
+RESET:
+    ; Stack
+    ldi  r16, high(RAMEND)
+    out  SPH, r16
+    ldi  r16, low(RAMEND)
+    out  SPL, r16
+    clr  r1
 
-RSI_0:
-    ldi     r16, 1
-    sts     btnf, r16
-    ldi     r24, (1<<INTF0)
-    out     EIFR, r24
-    reti
+    ; Salidas: PB0..PB5 y PD6..PD7
+    ldi  r16, 0b00111111
+    out  DDRB, r16
+    in   r17, DDRD
+    ori  r17, (1<<DDD6)|(1<<DDD7)
+    out  DDRD, r17
+
+    ; Apagar LEDS
+    ldi  r16, 0
+    out  PORTB, r16
+    cbi  PORTD, PD6
+    cbi  PORTD, PD7
+
+; Bucle principal (cambia las secuencias en el bucle)
+MainLoop:
+    rcall SecuenciaSoloUno        ; 1) del pin 13 al pin 6, uno por vez
+    rcall Pausa
+    rcall SecuenciaAcumulada      ; 2) del pin 13 al pin 6, acumulando
+    rcall Pausa
+    rcall ExtremosCentro          ; 3) pares extremos al centro y vuelta
+    rcall Pausa
+    rjmp  MainLoop
+
+; 1) Desplazamiento de Izquierda a Derecha (LED13 al LED6)
 
 SecuenciaSoloUno:
-    clr     r0
-    out     PORTB, r0
-    out     PORTD, r0
-    ldi     r21, (1 << PD6)
-    out     PORTD, r21
-    rcall   Mseg
-    ldi     r21, (1 << PD7)
-    out     PORTD, r21
-    rcall   Mseg
-    clr     r21
-    out     PORTD, r21
-    ldi     r20, 0x01
-Ciclo_PORTB:
-    out     PORTB, r20
-    rcall   Mseg
-    cpi     r20, 0x20
-    breq    _finSoloUno
-    lsl     r20
-    rjmp    Ciclo_PORTB
-_finSoloUno:
-    clr     r20
-    out     PORTB, r20
+    ; Apagar
+    ldi  r20, 0
+    out  PORTB, r20
+    cbi  PORTD, PD6
+    cbi  PORTD, PD7
+
+    ; 13
+    sbi  PORTB, PB5
+    rcall Mseg
+    cbi  PORTB, PB5
+    ; 12
+    sbi  PORTB, PB4
+    rcall Mseg
+    cbi  PORTB, PB4
+    ; 11
+    sbi  PORTB, PB3
+    rcall Mseg
+    cbi  PORTB, PB3
+    ; 10
+    sbi  PORTB, PB2
+    rcall Mseg
+    cbi  PORTB, PB2
+    ; 9
+    sbi  PORTB, PB1
+    rcall Mseg
+    cbi  PORTB, PB1
+    ; 8
+    sbi  PORTB, PB0
+    rcall Mseg
+    cbi  PORTB, PB0
+    ; 7
+    sbi  PORTD, PD7
+    rcall Mseg
+    cbi  PORTD, PD7
+    ; 6
+    sbi  PORTD, PD6
+    rcall Mseg
+    cbi  PORTD, PD6
     ret
 
+; 2) Secuencial de Izquierda a Derecha acumulando (LED13 al LED6)
 SecuenciaAcumulada:
-    clr     r0
-    out     PORTB, r0
-    out     PORTD, r0
-    ldi     r21, (1<<PD6)
-    out     PORTD, r21
-    rcall   Mseg
-    ori     r21, (1<<PD7)
-    out     PORTD, r21
-    rcall   Mseg
-    clr     r22
-    ldi     r23, 0x01
-BuclePB:
-    or      r22, r23
-    out     PORTB, r22
-    rcall   Mseg
-    cpi     r23, 0x20
-    breq    _finAcum
-    lsl     r23
-    rjmp    BuclePB
-_finAcum:
-    clr     r22
-    out     PORTB, r22
-    clr     r21
-    out     PORTD, r21
+    ; Apagar
+    ldi  r22, 0
+    out  PORTB, r22
+    cbi  PORTD, PD6
+    cbi  PORTD, PD7
+
+    sbi  PORTB, PB5   ; 13
+    rcall Mseg
+    sbi  PORTB, PB4   ; 13,12
+    rcall Mseg
+    sbi  PORTB, PB3   ; 13..11
+    rcall Mseg
+    sbi  PORTB, PB2   ; 13..10
+    rcall Mseg
+    sbi  PORTB, PB1   ; 13..9
+    rcall Mseg
+    sbi  PORTB, PB0   ; 13..8
+    rcall Mseg
+    sbi  PORTD, PD7   ; +7
+    rcall Mseg
+    sbi  PORTD, PD6   ; +6
+    rcall Mseg
+
+    ; Apagar al final
+    ldi  r22, 0
+    out  PORTB, r22
+    cbi  PORTD, PD6
+    cbi  PORTD, PD7
     ret
 
+; 3) Extremos al Centro (pares) y vuelta
+;    (13+6) al (12+7) al (11+8) al (10+9)  y apagar en sentido inverso
+ExtremosCentro:
+    ; Encendido
+    sbi  PORTB, PB5   ; 13
+    sbi  PORTD, PD6   ; 6
+    rcall Mseg
+
+    sbi  PORTB, PB4   ; 12
+    sbi  PORTD, PD7   ; 7
+    rcall Mseg
+
+    sbi  PORTB, PB3   ; 11
+    sbi  PORTB, PB0   ; 8
+    rcall Mseg
+
+    sbi  PORTB, PB2   ; 10
+    sbi  PORTB, PB1   ; 9
+    rcall Mseg
+
+    ; Apagado (centro a extremos)
+    cbi  PORTB, PB2   ; 10
+    cbi  PORTB, PB1   ; 9
+    rcall Mseg
+
+    cbi  PORTB, PB3   ; 11
+    cbi  PORTB, PB0   ; 8
+    rcall Mseg
+
+    cbi  PORTB, PB4   ; 12
+    cbi  PORTD, PD7   ; 7
+    rcall Mseg
+
+    cbi  PORTB, PB5   ; 13
+    cbi  PORTD, PD6   ; 6
+    rcall Mseg
+    ret
+
+; Pausas entre las secuencias 
+Pausa:
+    rcall Mseg
+    rcall Mseg
+    rcall Mseg
+    ret
+
+; Delay por software 
 Mseg:
-    ldi     r25, 21
-    ldi     r26, 75
-    ldi     r27, 189
+    ldi  r25, 21
+    ldi  r26, 75
+    ldi  r27, 189
 L1:
-    dec     r27
-    brne    L1
-    dec     r26
-    brne    L1
-    dec     r25
-    brne    L1
+    dec  r27
+    brne L1
+    dec  r26
+    brne L1
+    dec  r25
+    brne L1
     nop
     ret
