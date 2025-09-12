@@ -5,51 +5,59 @@
 .org 0x0000
     rjmp inicio
 
+; Direcciones base para las tablas de segmentos (LUTs)
 .equ LUTB_DIR  = 0x0100
 .equ LUTD_DIR  = 0x0110
 
+; Pines de entrada
 .equ PIN_INICIO = 5
 .equ PIN_ALTO   = 4
 
+; Máscaras para PORTB y PORTD
 .equ MASCARA_B     = 0b00000011
 .equ MASCARA_D     = 0b11111100
 .equ INV_MASCARA_B = 0b11111100
 .equ INV_MASCARA_D = 0b00000011
 
 configurar_sistema:
+    ; Configura PB0 y PB1 como salida
     in      r20, DDRB
     ori     r20, MASCARA_B
     out     DDRB, r20
 
+    ; Configura PD2 a PD7 como salida
     in      r20, DDRD
     ori     r20, MASCARA_D
     out     DDRD, r20
 
+    ; Establece PC como entrada y activa pull-ups en PC4 y PC5
     clr     r20
     out     DDRC, r20
     ldi     r20, (1<<PIN_INICIO) | (1<<PIN_ALTO)
     out     PORTC, r20
 
-    rcall   cargar_luts_7seg
+    rcall   cargar_luts_7seg    ; Carga tabla de segmentos
     ret
 
 esperar_pulsacion:
+    ; Espera a que el botón seleccionado en r18 sea presionado
 esperar_pulsacion_loop:
     in      r19, PINC
     and     r19, r18
     brne    esperar_pulsacion_loop
-    rcall   retardo_5ms
+    rcall   retardo_5ms    ; Antirrebote
     in      r19, PINC
     and     r19, r18
     brne    esperar_pulsacion_loop
     ret
 
 esperar_liberacion:
+    ; Espera a que el botón sea liberado
 esperar_liberacion_loop:
     in      r19, PINC
     and     r19, r18
     breq    esperar_liberacion_loop
-    rcall   retardo_5ms
+    rcall   retardo_5ms    ; Antirrebote
     in      r19, PINC
     and     r19, r18
     breq    esperar_liberacion_loop
@@ -67,6 +75,7 @@ ret5ms_interno:
     ret
 
 retardo_200ms:
+    ; Repite el retardo de 5 ms 255 veces (~200 ms)
     ldi     r24, 255
 ret200ms_loop:
     rcall   retardo_5ms
@@ -75,23 +84,26 @@ ret200ms_loop:
     ret
 
 obtener_digito:
+    ; Extrae los 4 bits bajos de r16 y los guarda en r21
     mov     r20, r16
     andi    r20, 0x0F
     mov     r21, r20
     ret
 
 mostrar_digito_7seg:
+    ; Carga el byte de segmentos desde LUTB usando índice r21
     ldi     r28, LOW(LUTB_DIR)
     ldi     r29, HIGH(LUTB_DIR)
     add     r28, r21
     adc     r29, r1
-    ld      r22, Y
+    ld      r22, Y    ; Resultado para PORTB en r22
 
+    ; Carga el byte de segmentos desde LUTD usando el mismo índice
     ldi     r28, LOW(LUTD_DIR)
     ldi     r29, HIGH(LUTD_DIR)
     add     r28, r21
     adc     r29, r1
-    ld      r23, Y
+    ld      r23, Y    ; Resultado para PORTD en r23
 
 .if DISPLAY_ANODO
     ldi     r25, MASCARA_B
