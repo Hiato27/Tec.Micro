@@ -105,72 +105,77 @@ mostrar_digito_7seg:
     adc     r29, r1
     ld      r23, Y    ; Resultado para PORTD en r23
 
-.if DISPLAY_ANODO
+ ; Actualiza PORTB respetando bits ajenos
+.if DISPLAY_ANODO             ; Si el display es ánodo común, invertir lógicas solo en bits útiles
     ldi     r25, MASCARA_B
-    eor     r22, r25
+    eor     r22, r25           ; Invierte bits de MASCARA_B en r22
     ldi     r25, MASCARA_D
-    eor     r23, r25
+    eor     r23, r25           ; Invierte bits de MASCARA_D en r23
 .endif
 
-    in      r25, PORTB
-    andi    r25, INV_MASCARA_B
-    or      r25, r22
-    out     PORTB, r25
+    in      r25, PORTB           ; Lee estado actual de PORTB
+    andi    r25, INV_MASCARA_B   ; Limpia solo PB0
+    or      r25, r22             ; Inserta nuevo patrón
+    out     PORTB, r25           ; Escribe a PORTB
 
-    in      r25, PORTD
+; Actualiza PORTD respetando bits ajenos
+    in      r25, PORTD                    ; Lee estado actual de PORTD
     andi    r25, INV_MASCARA_D
-    or      r25, r23
-    out     PORTD, r25
+    or      r25, r23                      ; Inserta un nuevo patrón
+    out     PORTD, r25                    ; Escribe a PORTD
     ret
 
+ ; LUT de PORTB (PB1 a PB0) 
 cargar_luts_7seg:
     ldi     r28, LOW(LUTB_DIR)
     ldi     r29, HIGH(LUTB_DIR)
-    ldi     r20, 0b00000001
+    ldi     r20, 0b00000001       ;0
     st      Y+, r20
-    ldi     r20, 0b00000000
+    ldi     r20, 0b00000000       ;1
     st      Y+, r20
-    ldi     r20, 0b00000010
+    ldi     r20, 0b00000010       ;2
     st      Y+, r20
-    ldi     r20, 0b00000010
+    ldi     r20, 0b00000010       ;3
     st      Y+, r20
-    ldi     r20, 0b00000011
+    ldi     r20, 0b00000011       ;4
     st      Y+, r20
-    ldi     r20, 0b00000011
+    ldi     r20, 0b00000011       ;5
     st      Y+, r20
-    ldi     r20, 0b00000011
+    ldi     r20, 0b00000011       ;6
     st      Y+, r20
-    ldi     r20, 0b00000000
+    ldi     r20, 0b00000000       ;7
     st      Y+, r20
-    ldi     r20, 0b00000011
+    ldi     r20, 0b00000011       ;8
     st      Y+, r20
-    ldi     r20, 0b00000011
+    ldi     r20, 0b00000011       ;9
     st      Y+, r20
 
+ ;  LUT de PORTD (PD7 a PD2)
     ldi     r28, LOW(LUTD_DIR)
     ldi     r29, HIGH(LUTD_DIR)
-    ldi     r20, 0b11111000
+    ldi     r20, 0b11111000      ;0
     st      Y+, r20
-    ldi     r20, 0b01001000
+    ldi     r20, 0b01001000      ;1
     st      Y+, r20
-    ldi     r20, 0b11110000
+    ldi     r20, 0b11110000      ;2
     st      Y+, r20
-    ldi     r20, 0b11011000
+    ldi     r20, 0b11011000      ;3
     st      Y+, r20
-    ldi     r20, 0b01001000
+    ldi     r20, 0b01001000      ;4
     st      Y+, r20
-    ldi     r20, 0b10011000
+    ldi     r20, 0b10011000      ;5
     st      Y+, r20
-    ldi     r20, 0b10111000
+    ldi     r20, 0b10111000      ;6
     st      Y+, r20
-    ldi     r20, 0b11001000
+    ldi     r20, 0b11001000      ;7
     st      Y+, r20
-    ldi     r20, 0b11111000
+    ldi     r20, 0b11111000      ;8
     st      Y+, r20
-    ldi     r20, 0b11011000
+    ldi     r20, 0b11011000      ;9
     st      Y+, r20
     ret
 
+ ; Inicializa el puntero de pila (Stack Pointer)
 inicio:
     ldi     r16, HIGH(RAMEND)
     out     SPH, r16
@@ -180,6 +185,7 @@ inicio:
     clr     r1
     rcall   configurar_sistema
 
+; Espera la señal de INICIO 
 bucle_principal:
     ldi     r18, (1<<PIN_INICIO)
     rcall   esperar_pulsacion
@@ -187,18 +193,21 @@ bucle_principal:
 
     clr     r16
 
+; Bucle de conteo y visualización
 bucle_conteo:
     rcall   obtener_digito
     rcall   mostrar_digito_7seg
 
+ ; Chequeo del botón ALTO para "resetear" al estado de espera
     in      r20, PINC
     sbrc    r20, PIN_ALTO
     rjmp    sin_alto
-    ldi     r18, (1<<PIN_ALTO)
+    ldi     r18, (1<<PIN_ALTO)      ;  Si ALTO está presionado (bit=0), se confirma con anti-rebote y se vuelve al inicio
     rcall   esperar_pulsacion
     rcall   esperar_liberacion
     rjmp    bucle_principal
 
+; Continuar conteo si ALTO no está presionado
 sin_alto:
     rcall   retardo_200ms
     inc     r16
