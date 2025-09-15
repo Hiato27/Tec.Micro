@@ -1,213 +1,592 @@
+; ============================================================
+; Matriz 8x8 DOLANG – ATmega328P (Arduino UNO)
+; Menú UART + Scroll "¿COMO ESTAS?" + figuras 8x8
+; Pinout fijo del usuario:
+;   Columnas C1..C8 → D2, D3, D4, D5, D6, D7, D8, D9
+;                      PD2..PD7, PB0, PB1
+;   Filas    F1..F8 → D10, D11, D12, D13, A0, A1, A2, A3
+;                      PB2..PB5,  PC0..PC3
+; Botones:
+;   A5=PC5 → velocidad (rápido/lento)
+;   A4=PC4 → pausa/continuar
+; ============================================================
+
 .include "m328pdef.inc"
 
-.org 0x0000
-    rjmp Inicio
+; ---------- POLARIDADES ----------
+; 1 = activo ALTO (enciende con '1'), 0 = activo BAJO (enciende con '0')
+.equ COL_ACTIVO_ALTO = 1
+.equ FIL_ACTIVO_ALTO = 0
 
-;  UART 
+; ---------- UART ----------
 .equ F_CPU = 16000000
-.equ baud  = 9600
-.equ bps   = (F_CPU/16/baud) - 1
+.equ BAUD  = 9600
+.equ BPS   = (F_CPU/16/BAUD) - 1
 
-;  MATRIZ 8x8 (pines) 
-; Columnas: C1..C6 = PD2..PD7, C7=PB0, C8=PB1
-; Filas:    F1..F4 = PB2..PB5, F5..F8 = PC0..PC3
-.equ FILASB_OFF       = 0x3C   ; PB2..PB5 en '1' para apagar
-.equ FILASC_OFF       = 0x0F   ; PC0..PC3 en '1' para apagar
+; ---------- MÁSCARAS DE PINES ----------
+.equ MASC_COL_D = 0b11111100     ; PD2..PD7
+.equ MASC_COL_B = 0b00000011     ; PB0..PB1
+.equ MASC_FIL_B = 0b00111100     ; PB2..PB5
+.equ MASC_FIL_C = 0b00001111     ; PC0..PC3
 
-;  Scroll (Caso 1)
-.equ FRAMES_POR_PASO  = 10     ; a menor número, más rápido
-.equ NUMFIG           = 14     ; cantidad de caracteres (incluye espacios)
+.equ LIMPIA_FIL_B = 0b11000011   ; limpia PB2..PB5
+.equ LIMPIA_FIL_C = 0b11110000   ; limpia PC0..PC3
 
-C:         .db 0x7F, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x7F
-O:         .db 0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF
-M1:        .db 0x81, 0xC3, 0xA5, 0x99, 0x81, 0x81, 0x81, 0x81
-E:         .db 0x7F, 0x01, 0x01, 0x01, 0x1F, 0x01, 0x01, 0x7F
-ESPACIO:   .db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-S:         .db 0x7F, 0x01, 0x01, 0x01, 0x7F, 0x40, 0x40, 0x7F
-T:         .db 0x7F, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08
-A:         .db 0x7E, 0x81, 0x81, 0xFF, 0x81, 0x81, 0x81, 0x81
-S1:        .db 0x7F, 0x01, 0x01, 0x01, 0x7F, 0x40, 0x40, 0x7F
-?1:        .db 0x7E, 0x81, 0x81, 0xFF, 0x81, 0x81, 0x81, 0x01   ; Representación del "?"
-?2:        .db 0x7E, 0x81, 0x81, 0xFF, 0x81, 0x81, 0x81, 0x01   ; Otra parte del signo "?"
-ESPACIO1:  .db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+.equ NOT_MASC_COL_D = 0x03
+.equ NOT_MASC_COL_B = 0xFC
 
-; Tabla de punteros de los caracteres de "¿CÓMO ESTÁS?"
-FIGTAB:
-    .dw (C<<1),(O<<1),(M1<<1),(E<<1),(ESPACIO<<1),(S<<1),(T<<1),(A<<1),(S1<<1), \
-        (?1<<1),(?2<<1),(ESPACIO1<<1)
+; ---------- CONSTANTES ----------
+.equ IMAGES_LEN    = 12          ; ¿ C O M O _ E S T A S ?
+.equ SCROLL_LENTO  = 20
+.equ SCROLL_RAPIDO = 8
 
-; ============================================================================== 
-;                                   INICIO
-; ==============================================================================
-Inicio:
+; ---------- REGISTROS ----------
+.def tmp      = r16
+.def tmp2     = r17
+.def mcol     = r18              ; 0..7
+.def patron   = r19
+.def modo     = r20              ; 0 off, 1 scroll, 2..6 imagen
+.def vel_sel  = r21              ; 0 rápido, 1 lento
+.def pausa    = r22              ; 0 corre, 1 pausa
+.def scnt     = r23              ; contador scroll
+.def smax     = r24              ; recarga scroll
+.def fila_ix  = r25              ; no usado en scroll (dejo por si)
+
+; punteros
+.def ZL = r30
+.def ZH = r31
+.def YL = r28
+.def YH = r29
+.def XL = r26
+.def XH = r27
+
+; ---------- RAM ----------
+.dseg
+COLBUF:      .byte 8     ; buffer visible (8 columnas)
+IMG_IDX:     .byte 1     ; índice de glyph 0..IMAGES_LEN-1
+IMG_COL:     .byte 1     ; columna interna 0..7
+MODO_LAST:   .byte 1     ; para detectar cambio de modo
+
+.cseg
+.org 0x0000
+    rjmp RESET
+.org 0x0002 rjmp DEF_ISR   ; INT0
+.org 0x0004 rjmp DEF_ISR   ; INT1
+.org 0x0006 rjmp DEF_ISR
+.org 0x0008 rjmp DEF_ISR
+.org 0x000A rjmp DEF_ISR
+.org 0x000C rjmp DEF_ISR
+.org 0x000E rjmp DEF_ISR
+.org 0x0010 rjmp DEF_ISR
+.org 0x0012 rjmp DEF_ISR
+.org 0x0014 rjmp DEF_ISR
+.org 0x0016 rjmp DEF_ISR
+.org 0x0018 rjmp DEF_ISR
+.org 0x001A rjmp DEF_ISR
+.org 0x001C rjmp DEF_ISR
+.org 0x001E rjmp DEF_ISR
+.org 0x0020 rjmp DEF_ISR   ; T0 OVF
+.org 0x0022 rjmp DEF_ISR
+.org 0x0024 rjmp USART_RX_ISR   ; RX
+.org 0x0026 rjmp DEF_ISR        ; UDRE (no usado)
+.org 0x0028 rjmp DEF_ISR
+.org 0x002A rjmp DEF_ISR
+.org 0x002C rjmp DEF_ISR
+.org 0x002E rjmp DEF_ISR
+.org 0x0030 rjmp DEF_ISR
+.org 0x0032 rjmp DEF_ISR
+.org 0x0034 rjmp DEF_ISR
+
+DEF_ISR: reti
+
+; ---------- GLYPHS 8x8 DE LA FRASE (en el orden que pasaste) ----------
+; Cada glyph: 8 bytes, bit0 = F1 ... bit7 = F8. LSB→MSB = izquierda→derecha.
+IMAGENES:
+    ; 0: '¿'
+    .db 0x10,0x00,0x10,0x18,0x04,0x24,0x24,0x18
+    ; 1: 'C'
+    .db 0x18,0x24,0x24,0x04,0x04,0x04,0x24,0x18
+    ; 2: 'O'
+    .db 0x18,0x24,0x24,0x24,0x24,0x24,0x24,0x18
+    ; 3: 'M'
+    .db 0x44,0x6C,0x54,0x44,0x44,0x44,0x44,0x44
+    ; 4: 'O'
+    .db 0x18,0x24,0x24,0x24,0x24,0x24,0x24,0x18
+    ; 5: ' ' (espacio)
+    .db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+    ; 6: 'E'
+    .db 0x3C,0x04,0x04,0x1C,0x04,0x04,0x04,0x3C
+    ; 7: 'S'
+    .db 0x18,0x24,0x04,0x08,0x10,0x20,0x24,0x18
+    ; 8: 'T'
+    .db 0x7E,0x7E,0x18,0x18,0x18,0x18,0x18,0x18
+    ; 9: 'A'
+    .db 0x18,0x24,0x24,0x3C,0x24,0x24,0x24,0x24
+    ; 10: 'S'
+    .db 0x18,0x24,0x04,0x08,0x10,0x20,0x24,0x18
+    ; 11: '?'
+    .db 0x08,0x00,0x08,0x18,0x08,0x20,0x24,0x18
+
+; Figuras 8x8 para el menú
+CARITA_SONR:
+    .db 0b00111100,0b01000010,0b10100101,0b10000001,0b10100101,0b10011001,0b01000010,0b00111100
+CARITA_TRIS:
+    .db 0b00111100,0b01000010,0b10100101,0b10000001,0b10011001,0b10100101,0b01000010,0b00111100
+CORAZON:
+    .db 0b00000000,0b01100110,0b11111111,0b11111111,0b11111111,0b01111110,0b00111100,0b00011000
+ROMBO:
+    .db 0b00011000,0b00111100,0b01111110,0b11111111,0b11111111,0b01111110,0b00111100,0b00011000
+ALIEN:
+    .db 0b00111100,0b01111110,0b10111101,0b11111111,0b11111111,0b00100100,0b01000010,0b10000001
+
+; Mensajes UART
+MENU_TXT:
+    .db 13,10,"Elija una opcion:",13,10
+    .db "[0] Apagar pantalla",13,10
+    .db "[1] Mensaje desplazante",13,10
+    .db "[2] Carita feliz",13,10
+    .db "[3] Carita triste",13,10
+    .db "[4] Corazon",13,10
+    .db "[5] Rombo",13,10
+    .db "[6] Alien",13,10,0
+OK_TXT:
+    .db 13,10,"OK",13,10,0
+
+; ---------- RESET ----------
+RESET:
+    clr r1                       ; zero-reg
+
     ; Stack
-    ldi r16, HIGH(RAMEND)
-    out SPH, r16
-    ldi r16, LOW(RAMEND)
-    out SPL, r16
-    clr r1                   ; convención ABI de AVR
+    ldi tmp, high(RAMEND)
+    out SPH, tmp
+    ldi tmp, low(RAMEND)
+    out SPL, tmp
 
-    ; UART 9600@16MHz
-    ldi r16, LOW(bps)
-    ldi r17, HIGH(bps)
-    rcall initUART
+    ; DDRs
+    in  tmp, DDRD
+    ori tmp, MASC_COL_D          ; PD2..PD7 salidas (columnas)
+    out DDRD, tmp
 
-    ; Inicializar matriz (GPIO + Timer0 para 1ms)
-    rcall initMatriz
+    in  tmp, DDRB
+    ori tmp, (MASC_COL_B | MASC_FIL_B) ; PB0..1 columnas + PB2..5 filas
+    out DDRB, tmp
 
-    ; Mensaje de bienvenida
-    ldi ZH, high(msgInicio<<1)
-    ldi ZL, low(msgInicio<<1)
-    rcall puts
+    in  tmp, DDRC
+    andi tmp, 0b11000000
+    ori  tmp, MASC_FIL_C         ; PC0..3 filas
+    out DDRC, tmp
 
+    ; Pull-ups botones PC4/PC5
+    in  tmp, PORTC
+    ori tmp, (1<<PC4)|(1<<PC5)
+    out PORTC, tmp
 
-;                               LOOP PRINCIPAL
+    ; Apagar display
+    rcall Desactivar_Todas_Columnas
+    rcall Filas_Todo_Off
 
-main_loop:
-    rcall getc               ; espera un carácter en r16
+    ; Estado
+    ldi modo, 1                  ; arranco en scroll
+    ldi vel_sel, 1               ; lento
+    clr pausa
+    ldi smax, SCROLL_LENTO
+    mov scnt, smax
+    clr tmp
+    sts IMG_IDX, tmp
+    sts IMG_COL, tmp
+    sts MODO_LAST, modo
 
-    cpi  r16, '1'
-    breq caso_1
-    cpi  r16, '2'
-    breq caso_2
-    cpi  r16, '3'
-    breq caso_3
-    cpi  r16, '4'
-    breq caso_4
-    cpi  r16, '5'
-    breq caso_5
-    cpi  r16, '6'
-    breq caso_6
-    cpi  r16, '7'
-    breq caso_7
-    rjmp caso_default
+    ; Limpiar buffer
+    clr tmp
+    sts COLBUF+0, tmp
+    sts COLBUF+1, tmp
+    sts COLBUF+2, tmp
+    sts COLBUF+3, tmp
+    sts COLBUF+4, tmp
+    sts COLBUF+5, tmp
+    sts COLBUF+6, tmp
+    sts COLBUF+7, tmp
 
-; Casos 
-caso_1:
-    ; Texto por Serial
-    ldi ZH, high(txtUno<<1)
-    ldi ZL, low(txtUno<<1)
-    rcall puts
-    ; Scroll del mensaje "¿CÓMO ESTÁS?" (una pasada completa)
-    rcall MostrarScrollMensaje
-    rjmp fin_switch
+    ; UART 9600-8N1
+    ldi tmp, high(BPS)
+    sts UBRR0H, tmp
+    ldi tmp, low(BPS)
+    sts UBRR0L, tmp
+    ldi tmp, (1<<RXEN0)|(1<<TXEN0)|(1<<RXCIE0)
+    sts UCSR0B, tmp
+    ldi tmp, (1<<UCSZ01)|(1<<UCSZ00)     ; 8N1
+    sts UCSR0C, tmp
 
-caso_2:
-    ldi ZH, high(txtDos<<1)
-    ldi ZL, low(txtDos<<1)
-    rcall puts
-    ; Cara feliz para SIEMPRE (sale si llega una tecla)
-    ldi  ZL, low(SONRISA<<1)
-    ldi  ZH, high(SONRISA<<1)
-    rjmp MOSTRAR_SIEMPRE     ; no vuelve
+    ; Enviar menú
+    ldi ZH, high(MENU_TXT<<1)
+    ldi ZL, low (MENU_TXT<<1)
+    rcall UART_PutsP
 
-caso_3:
-    ldi ZH, high(txtTres<<1)
-    ldi ZL, low(txtTres<<1)
-    rcall puts
-    ; Cara triste para SIEMPRE
-    ldi  ZL, low(TRISTE<<1)
-    ldi  ZH, high(TRISTE<<1)
-    rjmp MOSTRAR_SIEMPRE
+    sei
+    rjmp MAIN
 
-caso_4:
-    ldi ZH, high(txtCuatro<<1)
-    ldi ZL, low(txtCuatro<<1)
-    rcall puts
-    ; Rombo para SIEMPRE
-    ldi  ZL, low(ROMBO<<1)
-    ldi  ZH, high(ROMBO<<1)
-    rjmp MOSTRAR_SIEMPRE
+; ---------- MAIN ----------
+MAIN:
+    ; barrido de 8 columnas
+    ldi mcol, 0
+BARRIDO:
+    ; patron = COLBUF[mcol]
+    ldi YH, high(COLBUF)
+    ldi YL, low (COLBUF)
+    add YL, mcol
+    adc YH, r1
+    ld  patron, Y
 
-caso_5:
-    ldi ZH, high(txtCinco<<1)
-    ldi ZL, low(txtCinco<<1)
-    rcall puts
-    ; Corazón para SIEMPRE
-    ldi  ZL, low(CORAZON<<1)
-    ldi  ZH, high(CORAZON<<1)
-    rjmp MOSTRAR_SIEMPRE
+    rcall Cargar_Filas
+    rcall Activar_Columna
+    rcall Retardo_Columna
+    rcall Desactivar_Todas_Columnas
 
-caso_6:
-    ldi ZH, high(txtSeis<<1)
-    ldi ZL, low(txtSeis<<1)
-    rcall puts
-    ; Alien para SIEMPRE
-    ldi  ZL, low(ALIEN<<1)
-    ldi  ZH, high(ALIEN<<1)
-    rjmp MOSTRAR_SIEMPRE
+    inc mcol
+    cpi mcol, 8
+    brlo BARRIDO
 
-caso_7:
-    ldi ZH, high(txtSiete<<1)
-    ldi ZL, low(txtSiete<<1)
-    rcall puts
-    ; Secuencia infinita (sale si llega una tecla durante el muestreo)
-    rjmp MostrarSecuenciaCincoFigForever
+    ; si modo cambió (y no es scroll), cargar figura al buffer
+    lds tmp, MODO_LAST
+    cp  tmp, modo
+    breq PostWork
+    sts MODO_LAST, modo
+    cpi modo, 1
+    breq PostWork
+    rcall CargarImagenActualA_COLBUF
 
-caso_default:
-    ; Eco del carácter y nueva línea
-    rcall putc         ; envía r16 tal cual
-    ldi  r16, 13
-    rcall putc
-    ldi  r16, 10
-    rcall putc
+PostWork:
+    ; botones (A5 velocidad, A4 pausa)
+    rcall Leer_Botones
 
-fin_switch:
-    rjmp main_loop
+    ; scroll si corresponde
+    cpi modo, 1
+    brne MAIN
+    tst pausa
+    brne MAIN
 
- 
-;       RUTINAS UART
+    dec scnt
+    brne MAIN
+    mov scnt, smax
+    rcall ScrollStep
+    rjmp MAIN
 
-initUART:
-    sts UBRR0L, r16
-    sts UBRR0H, r17
-    ldi r16, (1<<RXEN0)|(1<<TXEN0)
-    sts UCSR0B, r16
-    ldi r16, (1<<UCSZ01)|(1<<UCSZ00)     ; 8N1
-    sts UCSR0C, r16
+; ---------- SCROLL ----------
+ScrollStep:
+    ; nextcol = IMAGENES[IMG_IDX][IMG_COL]
+    lds tmp, IMG_IDX
+    ; Z = IMAGENES + 8*idx
+    ldi ZH, high(IMAGENES<<1)
+    ldi ZL, low (IMAGENES<<1)
+    mov tmp2, tmp
+    lsl tmp2       ; *2
+    lsl tmp2       ; *4
+    lsl tmp2       ; *8
+    add ZL, tmp2
+    adc ZH, r1
+
+    lds tmp, IMG_COL
+    add ZL, tmp
+    adc ZH, r1
+    lpm tmp2, Z                ; tmp2 = columna (byte) del glyph actual
+
+    ; shift COLBUF a la izquierda y colocar nueva columna al final
+    lds tmp,  COLBUF+1  sts COLBUF+0, tmp
+    lds tmp,  COLBUF+2  sts COLBUF+1, tmp
+    lds tmp,  COLBUF+3  sts COLBUF+2, tmp
+    lds tmp,  COLBUF+4  sts COLBUF+3, tmp
+    lds tmp,  COLBUF+5  sts COLBUF+4, tmp
+    lds tmp,  COLBUF+6  sts COLBUF+5, tmp
+    lds tmp,  COLBUF+7  sts COLBUF+6, tmp
+    sts COLBUF+7, tmp2
+
+    ; avanzar columna/glyph
+    lds tmp, IMG_COL
+    inc tmp
+    cpi tmp, 8
+    brlo SS_StoreCol
+    clr tmp
+    sts IMG_COL, tmp
+    lds tmp, IMG_IDX
+    inc tmp
+    cpi tmp, IMAGES_LEN
+    brlo SS_StoreIdx
+    clr tmp
+SS_StoreIdx:
+    sts IMG_IDX, tmp
+    ret
+SS_StoreCol:
+    sts IMG_COL, tmp
     ret
 
-putc:
-    lds r17, UCSR0A
-    sbrs r17, UDRE0
-    rjmp putc
+; ---------- CARGA FIGURAS EN COLBUF ----------
+; según 'modo': 2..6
+CargarImagenActualA_COLBUF:
+    cpi modo, 2
+    breq CI_FELIZ
+    cpi modo, 3
+    breq CI_TRISTE
+    cpi modo, 4
+    breq CI_COR
+    cpi modo, 5
+    breq CI_ROM
+    ; modo==6
+    ldi ZH, high(ALIEN<<1)
+    ldi ZL, low (ALIEN<<1)
+    rjmp CI_CPY
+CI_FELIZ:
+    ldi ZH, high(CARITA_SONR<<1)
+    ldi ZL, low (CARITA_SONR<<1)
+    rjmp CI_CPY
+CI_TRISTE:
+    ldi ZH, high(CARITA_TRIS<<1)
+    ldi ZL, low (CARITA_TRIS<<1)
+    rjmp CI_CPY
+CI_COR:
+    ldi ZH, high(CORAZON<<1)
+    ldi ZL, low (CORAZON<<1)
+    rjmp CI_CPY
+CI_ROM:
+    ldi ZH, high(ROMBO<<1)
+    ldi ZL, low (ROMBO<<1)
+
+CI_CPY:
+    ldi YH, high(COLBUF)
+    ldi YL, low (COLBUF)
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    lpm tmp, Z+  st Y+, tmp
+    ret
+
+; ---------- I/O DISPLAY ----------
+Activar_Columna:
+    cpi mcol, 6
+    brlo COL_PD
+
+    ; PB0..PB1 (C7..C8)
+    mov tmp, mcol
+    subi tmp, 6                 ; 0 -> C7(PB0), 1 -> C8(PB1)
+    ldi tmp2, 1
+    cp  tmp, r1
+    breq PB_READY
+    lsl tmp2                    ; -> 0b00000010
+PB_READY:
+    in  tmp, PORTB
+.if COL_ACTIVO_ALTO
+    or  tmp, tmp2
+.else
+    com tmp2
+    and tmp, tmp2
+.endif
+    out PORTB, tmp
+    ret
+
+COL_PD:
+    ; PD2..PD7 (C1..C6)
+    ldi tmp2, 0b00000100        ; PD2
+COL_SH:
+    cpi mcol, 0
+    breq COL_GO
+    lsl tmp2
+    dec mcol
+    rjmp COL_SH
+COL_GO:
+    in  tmp, PORTD
+.if COL_ACTIVO_ALTO
+    or  tmp, tmp2
+.else
+    com tmp2
+    and tmp, tmp2
+.endif
+    out PORTD, tmp
+    ret
+
+Desactivar_Todas_Columnas:
+    in  tmp, PORTD
+.if COL_ACTIVO_ALTO
+    andi tmp, NOT_MASC_COL_D
+.else
+    ori  tmp,  MASC_COL_D
+.endif
+    out PORTD, tmp
+
+    in  tmp, PORTB
+.if COL_ACTIVO_ALTO
+    andi tmp, NOT_MASC_COL_B
+.else
+    ori  tmp,  MASC_COL_B
+.endif
+    out PORTB, tmp
+    ret
+
+Cargar_Filas:
+    ; PORTB (F1..F4 → PB2..PB5)
+    mov tmp2, patron
+    andi tmp2, 0x0F
+    lsl tmp2
+    lsl tmp2
+    in  tmp, PORTB
+.if FIL_ACTIVO_ALTO
+    andi tmp, LIMPIA_FIL_B
+    or   tmp, tmp2
+.else
+    ori  tmp, MASC_FIL_B
+    com  tmp2
+    and  tmp, tmp2
+.endif
+    out PORTB, tmp
+
+    ; PORTC (F5..F8 → PC0..PC3)
+    mov tmp2, patron
+    andi tmp2, 0xF0
+    lsr tmp2
+    lsr tmp2
+    lsr tmp2
+    lsr tmp2
+    in  tmp, PORTC
+.if FIL_ACTIVO_ALTO
+    andi tmp, LIMPIA_FIL_C
+    or   tmp, tmp2
+.else
+    ori  tmp, MASC_FIL_C
+    com  tmp2
+    and  tmp, tmp2
+.endif
+    out PORTC, tmp
+    ret
+
+Filas_Todo_Off:
+    in  tmp, PORTB
+.if FIL_ACTIVO_ALTO
+    andi tmp, LIMPIA_FIL_B
+.else
+    ori  tmp, MASC_FIL_B
+.endif
+    out PORTB, tmp
+
+    in  tmp, PORTC
+.if FIL_ACTIVO_ALTO
+    andi tmp, LIMPIA_FIL_C
+.else
+    ori  tmp, MASC_FIL_C
+.endif
+    out PORTC, tmp
+    ret
+
+; ---------- BOTONES ----------
+Leer_Botones:
+    in tmp, PINC
+    ; PC5 velocidad
+    sbrs tmp, PC5
+    rcall Boton_Vel
+    ; PC4 pausa
+    sbrs tmp, PC4
+    rcall Boton_Pausa
+    ret
+
+Boton_Vel:
+LB5:
+    rcall Debounce
+    in tmp, PINC
+    sbrc tmp, PC5
+    rjmp FV
+    rjmp LB5
+FV:
+    ldi tmp, 1
+    eor vel_sel, tmp
+    cpi vel_sel, 0
+    breq VELOCIDAD_RAP
+    ldi smax, SCROLL_LENTO
+    ret
+VELOCIDAD_RAP:
+    ldi smax, SCROLL_RAPIDO
+    ret
+
+Boton_Pausa:
+LB4:
+    rcall Debounce
+    in tmp, PINC
+    sbrc tmp, PC4
+    rjmp FP
+    rjmp LB4
+FP:
+    ldi tmp, 1
+    eor pausa, tmp
+    ret
+
+; ---------- UART ----------
+UART_TxByte:
+    lds tmp, UCSR0A
+    sbrs tmp, UDRE0
+    rjmp UART_TxByte
     sts UDR0, r16
     ret
 
-getc:
-    lds r17, UCSR0A
-    sbrs r17, RXC0
-    rjmp getc
-    lds r16, UDR0
-    ret
-
-puts:
+UART_PutsP:           ; Z apunta a cadena en PROGMEM, finalizada en 0
+UP_LOOP:
     lpm r16, Z+
     cpi r16, 0
-    breq fin_puts
-    rcall putc
-    rjmp puts
-fin_puts:
+    breq UP_END
+    rcall UART_TxByte
+    rjmp UP_LOOP
+UP_END:
     ret
 
+; ---------- RX ISR: cambia de modo según '0'..'6' ----------
+USART_RX_ISR:
+    push r16
+    in   r16, SREG
+    push r16
+    push r17
 
-;                           MENSAJES MONITOR SERIAL
+    lds r16, UDR0
+    cpi r16, '0'  breq RX_0
+    cpi r16, '1'  breq RX_1
+    cpi r16, '2'  breq RX_2
+    cpi r16, '3'  breq RX_3
+    cpi r16, '4'  breq RX_4
+    cpi r16, '5'  breq RX_5
+    cpi r16, '6'  breq RX_6
+    rjmp RX_END
 
-.cseg
-msgInicio:
-    .db "Bienvenido! Ingrese el numero para la accion que quiere realizar", 13, 10, \
-        "1 - Mostrar el Mensaje", 13, 10, \
-        "2 - Mostrar Cara Feliz", 13, 10, \
-        "3 - Mostrar Cara Triste", 13, 10, \
-        "4 - Mostrar Rombo", 13, 10, \
-        "5 - Mostrar Corazon", 13, 10, \
-        "6 - Mostrar Alien de Space Invaders", 13, 10, \
-        "7 - Mostrar las 5 figuras cada 1 segundo", 13, 10, 0, 0   
+RX_0: ldi r17, 0  rjmp RX_SET
+RX_1: ldi r17, 1  rjmp RX_SET
+RX_2: ldi r17, 2  rjmp RX_SET
+RX_3: ldi r17, 3  rjmp RX_SET
+RX_4: ldi r17, 4  rjmp RX_SET
+RX_5: ldi r17, 5  rjmp RX_SET
+RX_6: ldi r17, 6
+RX_SET:
+    mov modo, r17
+    ; Feedback: "OK"
+    ldi ZH, high(OK_TXT<<1)
+    ldi ZL, low (OK_TXT<<1)
+    rcall UART_PutsP
+RX_END:
+    pop r17
+    pop r16
+    out SREG, r16
+    pop r16
+    reti
 
-txtUno:    .db "Has elegido MENSAJE",      13, 10, 0          
-txtDos:    .db "Has elegido CARA FELIZ",      13, 10, 0, 0        
-txtTres:   .db "Has elegido CARA TRISTE",     13, 10, 0, 0, 0       
-txtCuatro: .db "Has elegido ROMBO",   13, 10, 0, 0, 0       
-txtCinco:  .db "Has elegido CORAZON",    13, 10, 0          
-txtSeis:   .db "Has elegido ALIEN DE SPACE INVADERS",     13, 10, 0, 0, 0       
-txtSiete:  .db "Has elegido VER LAS 5 FIGURAS",    13, 10, 0
+; ---------- DELAYS ----------
+Retardo_Columna:
+    ldi tmp, 6
+RC_F1:
+        ldi tmp2, 255
+RC_F2:  dec tmp2
+        brne RC_F2
+        dec tmp
+        brne RC_F1
+    ret
+
+Debounce:
+    ldi tmp, 80
+DB1: dec tmp
+    brne DB1
+    ret
