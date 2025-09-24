@@ -1,3 +1,6 @@
+; --- DAC R-2R por PORTD con LUT 0x00..0xFF (ATmega328P, 16 MHz) ---
+; fs ~ 25.64 kHz (Timer2 CTC, prescaler=8, OCR2A=77) -> f_signal ~ 100.2 Hz
+
 .include "m328pdef.inc"
 
 .cseg
@@ -6,6 +9,7 @@
 .org OC2Aaddr
     rjmp ISR
 
+; -------- Registros --------
 .def a  = r16
 .def t  = r17
 .def t2 = r18
@@ -13,16 +17,19 @@
 .equ T2_OCR = 77
 
 RESET:
+    ; Stack
     ldi t, high(RAMEND)
     out SPH, t
     ldi t, low(RAMEND)
     out SPL, t
 
+    ; PORTD salida
     ldi t, 0xFF
     out DDRD, t
     clr a
     out PORTD, a
 
+    ; Timer2 CTC, prescaler=8
     ldi t, (1<<WGM21)
     sts TCCR2A, t
     ldi t, (1<<CS21)
@@ -32,6 +39,7 @@ RESET:
     ldi t, (1<<OCIE2A)
     sts TIMSK2, t
 
+    ; inicio LUT 
     ldi ZL, low(LUT_0x00_FF*2)
     ldi ZH, high(LUT_0x00_FF*2)
 
@@ -39,10 +47,12 @@ RESET:
 loop:
     rjmp loop
 
+; ---------- ISR ----------
 ISR:
-    lpm  a, Z+
+    lpm  a, Z+            ; leer siguiente muestra
     out  PORTD, a
 
+    ; if (Z < LUT_END_B*2) continue; else Z = LUT_START_B*2
     ldi  t,  low(LUT_END_B*2)
     ldi  t2, high(LUT_END_B*2)
     cp   ZL, t
@@ -54,6 +64,7 @@ ISR:
 done:
     reti
 
+; ---------- LUT EXACTA Señal 3 ----------
 LUT_0x00_FF:
     .db 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f
     .db 0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
