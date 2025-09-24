@@ -74,7 +74,7 @@ READ_KEY:
     breq    DO_OP2
     cpi     r24, '3'
     breq    DO_OP3
-    cpi     r24, '4'
+    cpi     r24, 'T'
     breq    DO_OP4
 
     ; Opción inválida
@@ -93,16 +93,17 @@ DO_OP1:
 
 ; OPCIÓN 2
 DO_OP2:
-    rcall   PRINT_PSTR_H2
-    rcall   PRINT_CRLF
-    rcall   RUN_SEQUENCE2     ; Cruz
-    rjmp    MENU
-
-; OPCIÓN 3
-DO_OP3:
     rcall   PRINT_PSTR_H3
     rcall   PRINT_CRLF
 	rcall   RUN_SEQUENCE3     ; Circulo
+    rjmp    MENU
+
+
+; OPCIÓN 3
+DO_OP3:
+    rcall   PRINT_PSTR_H2
+    rcall   PRINT_CRLF
+    rcall   RUN_SEQUENCE2     ; Cruz
     rjmp    MENU
 
 ; OPCIÓN 4
@@ -110,8 +111,8 @@ DO_OP4:
    rcall   PRINT_PSTR_H3
    rcall   PRINT_CRLF
    rcall   RUN_SEQUENCE      ; Triangulo
-   rcall   RUN_SEQUENCE2     ; Cruz
    rcall   RUN_SEQUENCE3     ; Circulo
+   rcall   RUN_SEQUENCE2     ; Cruz
    rjmp    MENU
 FIN:
     rjmp    FIN
@@ -168,7 +169,7 @@ RUN_SEQUENCE:
     ret
 
 ;===================================================
-;   SUBRUTINA: OPCIÓN 2 Cruz
+;   SUBRUTINA: OPCIÓN 3 Cruz
 ;===================================================
 
 RUN_SEQUENCE2:
@@ -238,10 +239,15 @@ RUN_SEQUENCE2:
     ret
 
 	;===================================================
-	;   SUBRUTINA: OPCIÓN 2 Cruz
+	;   SUBRUTINA: OPCIÓN 3 Circulo
 	;===================================================
 
 	RUN_SEQUENCE3:
+
+	; --- Paso 1: D4 = ON (25 s) ---
+    ldi     r16, (1<<PD4)
+    out     PORTD, r16
+    rcall   DELAY_25s
 
     ; --- Paso 1: D4 = ON (25 s) ---
     ldi     r16, (1<<PD4)
