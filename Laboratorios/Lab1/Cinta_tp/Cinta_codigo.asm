@@ -1,46 +1,67 @@
 .include "m328pdef.inc"
 
-.equ TIEMPO_DESC_MS     = 350      ; ms de descenso (≈ 1/2 vuelta)
-.equ TIEMPO_ASC_MS      = 350      ; ms de ascenso  (≈ 1/2 vuelta)
-.equ TIEMPO_PRESION_MS  = 2000     ; ms motor apagado (presionando)
-.equ TIEMPO_PAUSA_MS    = 10000    ; ms motor apagado (pausa tras ascenso)
-.equ DEAD_MS            = 50       ; ms de “muerto” al cambiar de sentido
-
-.equ M2_INVERTIR        = 0        ; 0=normal, 1=invierte sentido
-.equ CICLOS_N           = 5        ; cantidad de ciclos por tanda
-
-.equ M2_A_BIT           = 6        ; PD6
-.equ M2_B_BIT           = 1        ; PB1
+;  Flujo: 'A' -> Perfil (1/2/3) -> Cantidad (1/2/3) -> Ejecuta
+;  Cinta: AVANCE -> PAUSA -> PUNZADO -> RETROCESO (= tiempo AVANCE)
+;  LEDs (PORTC):
+;    A0=Espera, A1=Run, A2=Fin(2s)
+;    A3=Ligera, A4=Media, A5=Pesada
 
 .equ F_CPU              = 16000000
 .equ BAUD               = 9600
 .equ UBRR_VAL           = (F_CPU/16/BAUD) - 1
+
+.equ LED_ACTIVE_LOW     = 0
+
+; M1 (cinta)
+.equ M1_A_BIT           = 5        ; PD5
+.equ M1_B_BIT           = 3        ; PD3
+
+; M2 (punzadora)
+.equ M2_A_BIT           = 4        ; PD4 (cambiado para compatibilidad)
+.equ M2_B_BIT           = 0        ; PB0 (cambiado para compatibilidad)
+
+; LEDs (PORTC / A0..A5)
+.equ LED_WAIT_BIT       = 0        ; A0 (PC0) - ESPERA
+.equ LED_RUN_BIT        = 1        ; A1 (PC1) - EJECUCIÓN  
+.equ LED_END_BIT        = 2        ; A2 (PC2) - FIN
+.equ LED_LIG_BIT        = 3        ; A3 (PC3) - LIGERA
+.equ LED_MED_BIT        = 4        ; A4 (PC4) - MEDIA
+.equ LED_PES_BIT        = 5        ; A5 (PC5) - PESADA
+
+.dseg
+FEED_ADV_S:     .byte 1    ; Tiempo avance cinta (segundos)
+FEED_PAUSE_S:   .byte 1    ; Tiempo pausa cinta (segundos)
+DISC_S:         .byte 1    ; Tiempo discado (segundos)
+PRESS_S:        .byte 1    ; Tiempo presión (segundos)
+COUNT_N:        .byte 1    ; Cantidad de ciclos
+KEYBUF:         .byte 1    ; Buffer tecla UART
+KEYRDY:         .byte 1    ; Flag tecla disponible
 
 .cseg
 .org 0x0000
     rjmp RESET
 
 initUART:
-    ldi  r16, low(UBRR_VAL)
-    ldi  r17, high(UBRR_VAL)
-    sts  UBRR0L, r16
-    sts  UBRR0H, r17
-    ldi  r16, (1<<RXEN0)|(1<<TXEN0)     ; RX/TX enable
-    sts  UCSR0B, r16
-    ldi  r16, (1<<UCSZ01)|(1<<UCSZ00)   ; 8N1
-    sts  UCSR0C, r16
+    ldi r16, low(UBRR_VAL)
+    ldi r17, high(UBRR_VAL)
+    sts UBRR0L, r16
+    sts UBRR0H, r17
+    ldi r16, (1<<RXEN0)|(1<<TXEN0)
+    sts UCSR0B, r16
+    ldi r16, (1<<UCSZ01)|(1<<UCSZ00)
+    sts UCSR0C, r16
     ret
 
-putc:                                   ; r16 = byte a TX
-    lds  r17, UCSR0A
+putc:
+    lds r17, UCSR0A
     sbrs r17, UDRE0
     rjmp putc
-    sts  UDR0, r16
+    sts UDR0, r16
     ret
 
-puts:                                   ; Z -> cadena FLASH 0-terminada
-    lpm  r16, Z+
-    cpi  r16, 0
+puts:
+    lpm r16, Z+
+    cpi r16, 0
     breq puts_end
     rcall putc
     rjmp puts
@@ -48,173 +69,410 @@ puts_end:
     ret
 
 printCRLF:
-    ldi  r16, 13
+    ldi r16, 13
     rcall putc
-    ldi  r16, 10
+    ldi r16, 10
     rcall putc
     ret
 
-T2_INICIAR_1MS:
-    ldi  r16, (1<<WGM21)                ; CTC
-    sts  TCCR2A, r16
-    ldi  r16, (1<<CS22)                 ; prescaler = 64
-    sts  TCCR2B, r16
-    ldi  r16, 249                       ; 1 ms @16MHz/64
-    sts  OCR2A, r16
-    ldi  r16, 0
-    sts  TCNT2, r16
-    ldi  r16, (1<<OCF2A)
-    out  TIFR2, r16
+getc_block:
+    lds r17, KEYRDY
+    tst r17
+    breq gb_uart
+    ldi r17, 0
+    sts KEYRDY, r17
+    lds r16, KEYBUF
+    ret
+gb_uart:
+    lds r17, UCSR0A
+    sbrs r17, RXC0
+    rjmp gb_uart
+    lds r16, UDR0
     ret
 
-T2_REINICIAR_1MS:
-    ldi  r16, 0
-    sts  TCNT2, r16
-    ldi  r16, (1<<OCF2A)
-    out  TIFR2, r16
+push_back:
+    sts KEYBUF, r16
+    ldi r17, 1
+    sts KEYRDY, r17
     ret
 
-; r24:r25 = milisegundos (0..65535)
-RETARDO_MS:
-    cp   r24, r1
-    cpc  r25, r1
-    breq ret_ready
-loop_ms:
-    ldi  r18, (1<<OCF2A)
-    out  TIFR2, r18
-wait_1ms:
-    in   r19, TIFR2
-    sbrs r19, OCF2A
-    rjmp wait_1ms
-    sbiw r24, 1
-    brne loop_ms
-ret_ready:
+flush_eol_or_push:
+flush_loop:
+    lds r17, UCSR0A
+    sbrs r17, RXC0
+    ret
+    lds r16, UDR0
+    cpi r16, 13
+    breq flush_loop
+    cpi r16, 10
+    breq flush_loop
+    rcall push_back
     ret
 
-M2_DETENER:
-    cbi  PORTD, M2_A_BIT
-    cbi  PORTB, M2_B_BIT
+M1_ON:
+    sbi PORTD, M1_A_BIT     ; D5=1
+    cbi PORTD, M1_B_BIT     ; D3=0
     ret
 
-.if M2_INVERTIR == 0
-M2_DESCENDER:                           ; bajar
-    sbi  PORTD, M2_A_BIT                ; A=1
-    cbi  PORTB, M2_B_BIT                ; B=0
+M1_REV:
+    cbi PORTD, M1_A_BIT     ; D5=0
+    sbi PORTD, M1_B_BIT     ; D3=1
     ret
-M2_ASCENDER:                            ; subir
-    cbi  PORTD, M2_A_BIT                ; A=0
-    sbi  PORTB, M2_B_BIT                ; B=1
+
+M1_OFF:
+    cbi PORTD, M1_A_BIT     ; D5=0
+    cbi PORTD, M1_B_BIT     ; D3=0
     ret
-.else
-M2_DESCENDER:                           ; bajar (invertido)
-    cbi  PORTD, M2_A_BIT
-    sbi  PORTB, M2_B_BIT
+
+M2_DOWN:
+    sbi PORTD, M2_A_BIT
+    cbi PORTB, M2_B_BIT
     ret
-M2_ASCENDER:                            ; subir (invertido)
-    sbi  PORTD, M2_A_BIT
-    cbi  PORTB, M2_B_BIT
+
+M2_UP:
+    cbi PORTD, M2_A_BIT
+    sbi PORTB, M2_B_BIT
     ret
-.endif
+
+M2_OFF:
+    cbi PORTD, M2_A_BIT
+    cbi PORTB, M2_B_BIT
+    ret
+
+LED_INIT_ALL:
+    sbi DDRC, LED_WAIT_BIT
+    sbi DDRC, LED_RUN_BIT  
+    sbi DDRC, LED_END_BIT
+    sbi DDRC, LED_LIG_BIT
+    sbi DDRC, LED_MED_BIT
+    sbi DDRC, LED_PES_BIT
+    cbi PORTC, LED_WAIT_BIT
+    cbi PORTC, LED_RUN_BIT
+    cbi PORTC, LED_END_BIT
+    cbi PORTC, LED_LIG_BIT
+    cbi PORTC, LED_MED_BIT
+    cbi PORTC, LED_PES_BIT
+    ret
+
+LED_SET_WAIT:
+    sbi PORTC, LED_WAIT_BIT
+    cbi PORTC, LED_RUN_BIT
+    cbi PORTC, LED_END_BIT
+    ret
+
+LED_SET_RUN:
+    cbi PORTC, LED_WAIT_BIT
+    sbi PORTC, LED_RUN_BIT
+    cbi PORTC, LED_END_BIT
+    ret
+
+LED_PULSE_END_2S:
+    cbi PORTC, LED_WAIT_BIT
+    cbi PORTC, LED_RUN_BIT
+    sbi PORTC, LED_END_BIT
+    cbi PORTC, LED_LIG_BIT
+    cbi PORTC, LED_MED_BIT
+    cbi PORTC, LED_PES_BIT
+    ldi r24, 2
+    rcall DELAY_S
+    cbi PORTC, LED_END_BIT
+    rjmp LED_SET_WAIT
+
+PROFILE_LEDS_OFF:
+    cbi PORTC, LED_LIG_BIT
+    cbi PORTC, LED_MED_BIT
+    cbi PORTC, LED_PES_BIT
+    ret
+
+PROFILE_SET_LIG:
+    rcall PROFILE_LEDS_OFF
+    sbi PORTC, LED_LIG_BIT
+    ret
+
+PROFILE_SET_MED:
+    rcall PROFILE_LEDS_OFF
+    sbi PORTC, LED_MED_BIT
+    ret
+
+PROFILE_SET_PES:
+    rcall PROFILE_LEDS_OFF
+    sbi PORTC, LED_PES_BIT
+    ret
+
+WAIT_A:
+    rcall LED_SET_WAIT
+    ldi ZH, high(msgAskStart<<1)
+    ldi ZL, low(msgAskStart<<1)
+    rcall puts
+    rcall printCRLF
+    rcall flush_eol_or_push
+WA_LOOP:
+    rcall getc_block
+    cpi r16, 13
+    breq WA_LOOP
+    cpi r16, 10
+    breq WA_LOOP
+    cpi r16, 'A'
+    brne WA_LOOP
+    ret
+
+ASK_PROFILE:
+    ldi ZH, high(msgAskProf<<1)
+    ldi ZL, low(msgAskProf<<1)
+    rcall puts
+    rcall printCRLF
+AP_WAIT_DIGIT:
+    rcall getc_block
+    cpi r16, 13
+    breq AP_WAIT_DIGIT
+    cpi r16, 10
+    breq AP_WAIT_DIGIT
+    cpi r16, '1'
+    brne _ap_not1
+    rcall PROFILE_SET_LIG
+    rjmp PROF_LIG
+_ap_not1:
+    cpi r16, '2'
+    brne _ap_not2
+    rcall PROFILE_SET_MED
+    rjmp PROF_MED
+_ap_not2:
+    cpi r16, '3'
+    brne AP_WAIT_DIGIT
+    rcall PROFILE_SET_PES
+    rjmp PROF_PES
+AP_CLEAN_EOL:
+    rcall flush_eol_or_push
+    ret
+
+ASK_QUANTITY:
+    ldi ZH, high(msgAskQty<<1)
+    ldi ZL, low(msgAskQty<<1)
+    rcall puts
+    rcall printCRLF
+    rcall flush_eol_or_push
+AQ_WAIT_DIGIT:
+    rcall getc_block
+    cpi r16, 13
+    breq AQ_WAIT_DIGIT
+    cpi r16, 10
+    breq AQ_WAIT_DIGIT
+    cpi r16, '1'
+    breq AQ_OK_1_3
+    cpi r16, '2'
+    breq AQ_OK_1_3
+    cpi r16, '3'
+    brne AQ_WAIT_DIGIT
+AQ_OK_1_3:
+    subi r16, '0'
+    sts COUNT_N, r16
+    ldi ZH, high(msgQtyOk<<1)
+    ldi ZL, low(msgQtyOk<<1)
+    rcall puts
+    rcall printCRLF
+    rcall flush_eol_or_push
+    ret
+
+PROF_LIG:
+    ldi r16, 3
+    sts FEED_ADV_S, r16
+    ldi r16, 2
+    sts FEED_PAUSE_S, r16
+    ldi r16, 2
+    sts PRESS_S, r16
+    ldi r16, 3
+    sts DISC_S, r16
+    ldi ZH, high(msgProfLig<<1)
+    ldi ZL, low(msgProfLig<<1)
+    rcall puts
+    rcall printCRLF
+    rjmp AP_CLEAN_EOL
+
+PROF_MED:
+    ldi r16, 4
+    sts FEED_ADV_S, r16
+    ldi r16, 2
+    sts FEED_PAUSE_S, r16
+    ldi r16, 3
+    sts PRESS_S, r16
+    ldi r16, 4
+    sts DISC_S, r16
+    ldi ZH, high(msgProfMed<<1)
+    ldi ZL, low(msgProfMed<<1)
+    rcall puts
+    rcall printCRLF
+    rjmp AP_CLEAN_EOL
+
+PROF_PES:
+    ldi r16, 5
+    sts FEED_ADV_S, r16
+    ldi r16, 3
+    sts FEED_PAUSE_S, r16
+    ldi r16, 4
+    sts PRESS_S, r16
+    ldi r16, 5
+    sts DISC_S, r16
+    ldi ZH, high(msgProfPes<<1)
+    ldi ZL, low(msgProfPes<<1)
+    rcall puts
+    rcall printCRLF
+    rjmp AP_CLEAN_EOL
+
+DELAY_S:
+    mov r25, r24
+DS_LOOP:
+    rcall DELAY_1S
+    dec r25
+    brne DS_LOOP
+    ret
+
+DELAY_1S:
+    ldi r23, 200
+D1S_L:
+    rcall DELAY_MS_5
+    dec r23
+    brne D1S_L
+    ret
+
+DELAY_MS_5:
+    ldi r20, 5
+D5_L:
+    rcall DELAY_MS_1
+    dec r20
+    brne D5_L
+    ret
+
+DELAY_MS_1:
+    ldi r21, 100
+D1_L1:
+    ldi r22, 53
+D1_L2:
+    dec r22
+    brne D1_L2
+    dec r21
+    brne D1_L1
+    ret
 
 RESET:
-    ; Stack y ABI
-    ldi  r16, high(RAMEND)
-    out  SPH, r16
-    ldi  r16, low(RAMEND)
-    out  SPL, r16
-    clr  r1
+    ldi r16, high(RAMEND)
+    out SPH, r16
+    ldi r16, low(RAMEND)
+    out SPL, r16
 
-    ; GPIO M2
-    sbi  DDRD, M2_A_BIT                 ; PD6 salida
-    sbi  DDRB, M2_B_BIT                 ; PB1 salida
-    rcall M2_DETENER
+    ; M1 OFF
+    sbi DDRD, M1_A_BIT
+    sbi DDRD, M1_B_BIT
+    cbi PORTD, M1_A_BIT
+    cbi PORTD, M1_B_BIT
 
-    ; Timer2 base 1 ms
-    rcall T2_INICIAR_1MS
+    ; M2 OFF
+    sbi DDRD, M2_A_BIT
+    sbi DDRB, M2_B_BIT
+    cbi PORTD, M2_A_BIT
+    cbi PORTB, M2_B_BIT
 
-    ; UART y banner
+    ; LEDs
+    rcall LED_INIT_ALL
+
+    ; UART
     rcall initUART
-    ldi  ZH, high(msgBanner<<1)
-    ldi  ZL, low(msgBanner<<1)
+
+    ; Variables
+    ldi r16, 0
+    sts KEYRDY, r16
+
+    ldi ZH, high(msgBanner<<1)
+    ldi ZL, low(msgBanner<<1)
     rcall puts
     rcall printCRLF
 
 MAIN:
-    ldi  r20, CICLOS_N                   ; r20 = contador de ciclos
+    rcall WAIT_A
+    rcall LED_SET_RUN
+
+    rcall ASK_PROFILE
+    rcall ASK_QUANTITY
+
+    ; N ciclos
+    lds r19, COUNT_N
 CICLO:
-    ldi  ZH, high(msgBajando<<1)
-    ldi  ZL, low(msgBajando<<1)
+    ; AVANCE
+    ldi ZH, high(msgFeedOn<<1)
+    ldi ZL, low(msgFeedOn<<1)
     rcall puts
     rcall printCRLF
+    rcall M1_ON
+    lds r24, FEED_ADV_S
+    rcall DELAY_S
+    rcall M1_OFF
 
-    rcall M2_DESCENDER
-    ldi  r24, low(TIEMPO_DESC_MS)
-    ldi  r25, high(TIEMPO_DESC_MS)
-    rcall T2_REINICIAR_1MS
-    rcall RETARDO_MS
-
-    rcall M2_DETENER
-    ldi  r24, low(DEAD_MS)
-    ldi  r25, high(DEAD_MS)
-    rcall T2_REINICIAR_1MS
-    rcall RETARDO_MS
-
-    ldi  ZH, high(msgPresion<<1)
-    ldi  ZL, low(msgPresion<<1)
+    ; PAUSA
+    ldi ZH, high(msgFeedPause<<1)
+    ldi ZL, low(msgFeedPause<<1)
     rcall puts
     rcall printCRLF
+    lds r24, FEED_PAUSE_S
+    rcall DELAY_S
 
-    ldi  r24, low(TIEMPO_PRESION_MS)
-    ldi  r25, high(TIEMPO_PRESION_MS)
-    rcall T2_REINICIAR_1MS
-    rcall RETARDO_MS
-
-    ldi  ZH, high(msgSubiendo<<1)
-    ldi  ZL, low(msgSubiendo<<1)
+    ; PUNZADO
+    ldi ZH, high(msgPunchDown<<1)
+    ldi ZL, low(msgPunchDown<<1)
     rcall puts
     rcall printCRLF
+    rcall M2_DOWN
+    ldi r24, 1
+    rcall DELAY_S
+    rcall M2_OFF
 
-    rcall M2_ASCENDER
-    ldi  r24, low(TIEMPO_ASC_MS)
-    ldi  r25, high(TIEMPO_ASC_MS)
-    rcall T2_REINICIAR_1MS
-    rcall RETARDO_MS
-
-    rcall M2_DETENER
-    ldi  r24, low(DEAD_MS)
-    ldi  r25, high(DEAD_MS)
-    rcall T2_REINICIAR_1MS
-    rcall RETARDO_MS
-
-    ldi  ZH, high(msgPausa<<1)
-    ldi  ZL, low(msgPausa<<1)
+    ldi ZH, high(msgPunchPress<<1)
+    ldi ZL, low(msgPunchPress<<1)
     rcall puts
     rcall printCRLF
+    lds r24, PRESS_S
+    rcall DELAY_S
 
-    ldi  r24, low(TIEMPO_PAUSA_MS)
-    ldi  r25, high(TIEMPO_PAUSA_MS)
-    rcall T2_REINICIAR_1MS
-    rcall RETARDO_MS
-
-    ldi  ZH, high(msgFinCiclo<<1)
-    ldi  ZL, low(msgFinCiclo<<1)
+    ldi ZH, high(msgPunchUp<<1)
+    ldi ZL, low(msgPunchUp<<1)
     rcall puts
     rcall printCRLF
+    rcall M2_UP
+    ldi r24, 1
+    rcall DELAY_S
+    rcall M2_OFF
 
-    dec  r20
+    ; RETROCESO
+    ldi ZH, high(msgReverseOn<<1)
+    ldi ZL, low(msgReverseOn<<1)
+    rcall puts
+    rcall printCRLF
+    rcall M1_REV
+    lds r24, FEED_ADV_S
+    rcall DELAY_S
+    rcall M1_OFF
+
+    dec r19
     brne CICLO
 
-    ldi  ZH, high(msgFinTanda<<1)
-    ldi  ZL, low(msgFinTanda<<1)
+    ; Fin total
+    rcall LED_PULSE_END_2S
+    ldi ZH, high(msgAllDone<<1)
+    ldi ZL, low(msgAllDone<<1)
     rcall puts
     rcall printCRLF
+    rjmp MAIN
 
-    rjmp MAIN                             ; repetir tandas
-
-msgBanner:    .db "ETAPA 2: Punzadora M2 con UART, ciclos y dead-time.",0
-msgBajando:   .db "M2: Bajando...",0
-msgPresion:   .db "M2: Presionando (motor OFF)...",0
-msgSubiendo:  .db "M2: Subiendo...",0
-msgPausa:     .db "M2: Pausa en alto...",0
-msgFinCiclo:  .db "Fin de ciclo.",0
-msgFinTanda:  .db "Fin de tanda. Reiniciando...",0
+msgBanner:      .db "Sistema completo con cinta, punzadora y LEDs",0,0
+msgAskStart:    .db "Presione 'A' para iniciar",0
+msgAskProf:     .db "Perfil: 1-Ligera, 2-Mediana, 3-Pesada",0
+msgAskQty:      .db "Cantidad (1,2 o 3) + ENTER",0,0
+msgProfLig:     .db "Perfil LIGERA",0
+msgProfMed:     .db "Perfil MEDIANA",0,0
+msgProfPes:     .db "Perfil PESADA",0
+msgQtyOk:       .db "Cantidad OK.",0,0
+msgFeedOn:      .db "AVANCE CINTA",0,0
+msgFeedPause:   .db "PAUSA CINTA",0
+msgPunchDown:   .db "PUNZADOR BAJANDO",0,0
+msgPunchPress:  .db "PUNZADOR PRESIONANDO",0,0
+msgPunchUp:     .db "PUNZADOR SUBIENDO",0
+msgReverseOn:   .db "RETROCESO CINTA",0
+msgAllDone:     .db "Fin. Volviendo a ESPERA...",0,0
