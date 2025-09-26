@@ -52,6 +52,7 @@ initUART:
     sts UCSR0C, r16
     ret
 
+; Inicialización UART
 putc:
     lds r17, UCSR0A
     sbrs r17, UDRE0
@@ -68,6 +69,8 @@ puts:
 puts_end:
     ret
 
+; Enviar carácter por UART
+
 printCRLF:
     ldi r16, 13
     rcall putc
@@ -75,6 +78,7 @@ printCRLF:
     rcall putc
     ret
 
+; Enviar string por UART
 getc_block:
     lds r17, KEYRDY
     tst r17
@@ -83,6 +87,8 @@ getc_block:
     sts KEYRDY, r17
     lds r16, KEYBUF
     ret
+
+; Enviar retorno de carro y nueva línea
 gb_uart:
     lds r17, UCSR0A
     sbrs r17, RXC0
@@ -90,6 +96,7 @@ gb_uart:
     lds r16, UDR0
     ret
 
+; Leer carácter (bloqueante) - primero del buffer, luego del UART
 push_back:
     sts KEYBUF, r16
     ldi r17, 1
@@ -109,36 +116,43 @@ flush_loop:
     rcall push_back
     ret
 
+; Control motor M1 (cinta) - sentido adelante
 M1_ON:
     sbi PORTD, M1_A_BIT     ; D5=1
     cbi PORTD, M1_B_BIT     ; D3=0
     ret
 
+; Control motor M1 (cinta) - sentido reversa
 M1_REV:
     cbi PORTD, M1_A_BIT     ; D5=0
     sbi PORTD, M1_B_BIT     ; D3=1
     ret
 
+; Control motor M1 (cinta) - apagar
 M1_OFF:
     cbi PORTD, M1_A_BIT     ; D5=0
     cbi PORTD, M1_B_BIT     ; D3=0
     ret
 
+; Control motor M2 (punzadora) - bajar
 M2_DOWN:
     sbi PORTD, M2_A_BIT
     cbi PORTB, M2_B_BIT
     ret
 
+; Control motor M2 (punzadora) - subir
 M2_UP:
     cbi PORTD, M2_A_BIT
     sbi PORTB, M2_B_BIT
     ret
 
+; Control motor M2 (punzadora) - apagar
 M2_OFF:
     cbi PORTD, M2_A_BIT
     cbi PORTB, M2_B_BIT
     ret
 
+; Inicializar todos los LEDs (configurar como salidas y apagar)
 LED_INIT_ALL:
     sbi DDRC, LED_WAIT_BIT
     sbi DDRC, LED_RUN_BIT  
@@ -154,18 +168,21 @@ LED_INIT_ALL:
     cbi PORTC, LED_PES_BIT
     ret
 
+; Configurar LED de espera (apagar RUN y FIN)
 LED_SET_WAIT:
     sbi PORTC, LED_WAIT_BIT
     cbi PORTC, LED_RUN_BIT
     cbi PORTC, LED_END_BIT
     ret
 
+; Configurar LED de ejecución (apagar WAIT y FIN)
 LED_SET_RUN:
     cbi PORTC, LED_WAIT_BIT
     sbi PORTC, LED_RUN_BIT
     cbi PORTC, LED_END_BIT
     ret
 
+; Pulso de LED de fin durante 2 segundos
 LED_PULSE_END_2S:
     cbi PORTC, LED_WAIT_BIT
     cbi PORTC, LED_RUN_BIT
@@ -178,27 +195,32 @@ LED_PULSE_END_2S:
     cbi PORTC, LED_END_BIT
     rjmp LED_SET_WAIT
 
+; Apagar todos los LEDs de perfil
 PROFILE_LEDS_OFF:
     cbi PORTC, LED_LIG_BIT
     cbi PORTC, LED_MED_BIT
     cbi PORTC, LED_PES_BIT
     ret
 
+; Encender LED de perfil Ligera
 PROFILE_SET_LIG:
     rcall PROFILE_LEDS_OFF
     sbi PORTC, LED_LIG_BIT
     ret
 
+; Encender LED de perfil Mediana
 PROFILE_SET_MED:
     rcall PROFILE_LEDS_OFF
     sbi PORTC, LED_MED_BIT
     ret
 
+; Encender LED de perfil Pesada
 PROFILE_SET_PES:
     rcall PROFILE_LEDS_OFF
     sbi PORTC, LED_PES_BIT
     ret
 
+; Esperar tecla 'A' para iniciar
 WAIT_A:
     rcall LED_SET_WAIT
     ldi ZH, high(msgAskStart<<1)
@@ -216,6 +238,7 @@ WA_LOOP:
     brne WA_LOOP
     ret
 
+; Solicitar perfil de trabajo (1=Ligera, 2=Mediana, 3=Pesada)
 ASK_PROFILE:
     ldi ZH, high(msgAskProf<<1)
     ldi ZL, low(msgAskProf<<1)
@@ -245,6 +268,7 @@ AP_CLEAN_EOL:
     rcall flush_eol_or_push
     ret
 
+; Solicitar cantidad de ciclos (1, 2 o 3)
 ASK_QUANTITY:
     ldi ZH, high(msgAskQty<<1)
     ldi ZL, low(msgAskQty<<1)
