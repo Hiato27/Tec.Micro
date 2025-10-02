@@ -1,0 +1,271 @@
+/* atmega328p_one_pin_keypad.c
+ * Teclado 4x4 en UN PIN usando ADC0 con resistor ladder.
+ * - UART 9600 para mostrar tecla.
+ * - Calibración interactiva (guarda 16 valores en EEPROM).
+ *
+ * F_CPU = 16 MHz (Arduino Uno / cristal 16 MHz).
+ */
+
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+#include <avr/eeprom.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+/* ===================== Configuración general ===================== */
+#define UART_BAUD     9600
+#define UBRR_VALUE    ((F_CPU/16/UART_BAUD)-1)
+
+#define ADC_CH        0            // ADC0 (PC0)
+#define ADC_PRESC     ((1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0)) // /128
+
+#define SAMPLES       8            // promedio simple de N lecturas
+#define STAB_N        4            // N lecturas consecutivas estables
+#define STAB_DELT     6            // tolerancia de estabilidad (LSBs)
+#define NO_KEY_ADC    1015         // ~sin tecla (casi VCC)
+#define KEY_TOL       30           // tolerancia para "acercar" a una tecla
+
+/* EEPROM: firma + 16 valores (uint16_t) */
+#define EE_MAGIC_ADDR   0x00
+#define EE_TABLE_ADDR   0x02
+#define EE_MAGIC_VALUE  0x4B59      // "KY"
+
+/* Mapa lógico de teclas en 4x4 */
+static const char keymap[16] = {
+    '1','2','3','A',
+    '4','5','6','B',
+    '7','8','9','C',
+    '*','0','#','D'
+};
+
+/* Tabla RAM con 16 valores "objetivo" de ADC por tecla (se cargan de EEPROM). */
+static uint16_t adc_targets[16];
+
+/* ===================== UART ===================== */
+static void uart_init(void) {
+    UBRR0H = (uint8_t)(UBRR_VALUE >> 8);
+    UBRR0L = (uint8_t)(UBRR_VALUE & 0xFF);
+    UCSR0A = 0;
+    UCSR0B = (1<<TXEN0) | (1<<RXEN0);
+    UCSR0C = (1<<UCSZ01)|(1<<UCSZ00); // 8N1
+}
+static void uart_tx(uint8_t c){
+    while(!(UCSR0A & (1<<UDRE0)));
+    UDR0 = c;
+}
+static void uart_print(const char *s){
+    while(*s) uart_tx((uint8_t)*s++);
+}
+static void uart_println(const char *s){
+    uart_print(s); uart_tx('\r'); uart_tx('\n');
+}
+static void uart_print_u16(uint16_t v){
+    char buf[6]; // max 65535
+    int i=5; buf[i--] = '\0';
+    if(v==0){ uart_tx('0'); return; }
+    while(v && i>=0){ buf[i--] = '0'+(v%10); v/=10; }
+    uart_print(&buf[i+1]);
+}
+
+/* ===================== ADC ===================== */
+static void adc_init(void){
+    ADMUX = (1<<REFS0) | (ADC_CH & 0x0F); // AVcc ref, ADC0
+    ADCSRA = (1<<ADEN) | ADC_PRESC;
+    _delay_ms(2);
+    // Primera conversión “dummy”
+    ADCSRA |= (1<<ADSC);
+    while(ADCSRA & (1<<ADSC));
+}
+
+static uint16_t adc_read_once(void){
+    ADCSRA |= (1<<ADSC);
+    while(ADCSRA & (1<<ADSC));
+    return ADC; // 10 bits
+}
+
+static uint16_t adc_read_avg(uint8_t n){
+    uint32_t acc = 0;
+    for(uint8_t i=0;i<n;i++){
+        acc += adc_read_once();
+    }
+    return (uint16_t)(acc / n);
+}
+
+/* ===================== EEPROM helpers ===================== */
+static bool eeprom_has_table(void){
+    uint16_t magic = eeprom_read_word((uint16_t*)EE_MAGIC_ADDR);
+    return (magic == EE_MAGIC_VALUE);
+}
+static void eeprom_load_table(uint16_t *dst16){
+    for(uint8_t i=0;i<16;i++){
+        uint16_t v = eeprom_read_word((uint16_t*)(EE_TABLE_ADDR + 2*i));
+        dst16[i] = v;
+    }
+}
+static void eeprom_save_table(const uint16_t *src16){
+    for(uint8_t i=0;i<16;i++){
+        eeprom_write_word((uint16_t*)(EE_TABLE_ADDR + 2*i), src16[i]);
+    }
+    eeprom_write_word((uint16_t*)EE_MAGIC_ADDR, EE_MAGIC_VALUE);
+}
+
+/* ===================== Lógica de teclado ===================== */
+/* Devuelve índice [0..15] o -1 si no hay tecla o no coincide dentro de tolerancia. */
+static int8_t key_from_adc(uint16_t val){
+    if(val >= NO_KEY_ADC) return -1; // no key
+
+    uint16_t best_diff = 0xFFFF;
+    int8_t best_idx = -1;
+
+    for(uint8_t i=0;i<16;i++){
+        uint16_t t = adc_targets[i];
+        uint16_t d = (val > t) ? (val - t) : (t - val);
+        if(d < best_diff){
+            best_diff = d;
+            best_idx = (int8_t)i;
+        }
+    }
+    if(best_diff <= KEY_TOL) return best_idx;
+    return -1;
+}
+
+/* Lee ADC hasta obtener N muestras "estables" (sin variar más de STAB_DELT). */
+static uint16_t read_stable_adc(void){
+    uint16_t last = adc_read_avg(SAMPLES);
+    uint8_t stable = 0;
+    while(stable < STAB_N){
+        _delay_ms(2);
+        uint16_t v = adc_read_avg(SAMPLES);
+        uint16_t diff = (v>last)?(v-last):(last-v);
+        if(diff <= STAB_DELT) stable++;
+        else { stable = 0; last = v; }
+        last = v;
+    }
+    return last;
+}
+
+/* ===================== Calibración ===================== */
+/* Pide por UART que presiones cada tecla en orden; guarda su valor medio. */
+static void keypad_calibration(void){
+    uart_println("== Calibracion 4x4 (un pin) ==");
+    uart_println("Presiona la tecla que se indica y suelta cuando se te pida.");
+    uart_println("Evita ruidos y mantene Vcc estable.\r\n");
+
+    for(uint8_t i=0;i<16;i++){
+        uart_print("Pulsa tecla [");
+        uart_tx(keymap[i]);
+        uart_println("] ...");
+
+        /* Esperar a que realmente se presione (baje de NO_KEY_ADC) */
+        while(1){
+            uint16_t v = adc_read_avg(SAMPLES);
+            if(v < NO_KEY_ADC){
+                /* esperar estabilidad de la pulsacion */
+                v = read_stable_adc();
+                adc_targets[i] = v;
+
+                uart_print("OK valor=");
+                uart_print_u16(v);
+                uart_println(" LSBs");
+                /* esperar a que se suelte (volver a “no key” estable) */
+                while(1){
+                    uint16_t r = adc_read_avg(SAMPLES);
+                    if(r >= NO_KEY_ADC){
+                        /* suelto estable */
+                        uint8_t ok=0;
+                        for(uint8_t k=0;k<STAB_N;k++){
+                            _delay_ms(2);
+                            r = adc_read_avg(SAMPLES);
+                            if(r >= NO_KEY_ADC) ok++;
+                        }
+                        if(ok==STAB_N) break;
+                    }
+                }
+                break;
+            }
+        }
+        _delay_ms(150);
+    }
+    eeprom_save_table(adc_targets);
+    uart_println("\r\nCalibracion guardada en EEPROM.");
+}
+
+/* ===================== Main ===================== */
+int main(void){
+    uart_init();
+    adc_init();
+    sei();
+
+    uart_println("\r\nKeypad 4x4 (un pin) – ATmega328P");
+    uart_println("UART 9600. Presiona teclas para verlas.");
+    uart_println("Para recalibrar: enviar 'c' por UART y seguir instrucciones.\r\n");
+
+    if(eeprom_has_table()){
+        eeprom_load_table(adc_targets);
+        uart_println("Tabla cargada desde EEPROM.");
+    }else{
+        uart_println("Sin tabla en EEPROM -> Iniciando calibracion.");
+        keypad_calibration();
+    }
+
+    /* Bucle principal: detectar pulsaciones “una vez”, sin autorepeticion */
+    bool pressed = false;
+    int8_t last_idx = -1;
+
+    while(1){
+        /* ¿pedido de recalibracion por UART? */
+        if(UCSR0A & (1<<RXC0)){
+            uint8_t c = UDR0;
+            if(c=='c' || c=='C'){
+                keypad_calibration();
+                last_idx = -1;
+                pressed = false;
+                uart_println("Listo. Volviendo a lectura normal.\r\n");
+            }
+        }
+
+        uint16_t val = read_stable_adc();
+
+        if(val >= NO_KEY_ADC){
+            /* No hay tecla */
+            pressed = false;
+            last_idx = -1;
+        }else{
+            int8_t idx = key_from_adc(val);
+            if(idx >= 0){
+                if(!pressed || idx != last_idx){
+                    /* Nueva pulsacion */
+                    uart_print("KEY: ");
+                    uart_tx(keymap[idx]);
+                    uart_print(" (adc=");
+                    uart_print_u16(val);
+                    uart_println(")");
+                    pressed = true;
+                    last_idx = idx;
+                }
+                /* esperar a que se suelte: */
+                while(1){
+                    uint16_t r = adc_read_avg(SAMPLES);
+                    if(r >= NO_KEY_ADC){
+                        /* confirmar estabilidad de suelta */
+                        uint8_t ok = 0;
+                        for(uint8_t k=0;k<STAB_N;k++){
+                            _delay_ms(2);
+                            r = adc_read_avg(SAMPLES);
+                            if(r >= NO_KEY_ADC) ok++;
+                        }
+                        if(ok==STAB_N) break;
+                    }
+                }
+                pressed = false;
+                last_idx = -1;
+            }else{
+                /* Nivel no reconocido: puede requerir recalibracion o ajustar KEY_TOL */
+            }
+        }
+        _delay_ms(5);
+    }
+    // return 0;
+}
