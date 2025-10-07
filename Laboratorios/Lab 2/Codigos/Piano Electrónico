@@ -70,7 +70,7 @@ static inline void tono_detener(void){
 }
 
 /* ---------- Notas ---------- */
-static const uint16_t notas[8] = {262,294,330,349,392,440,494,523};
+static const uint16_t notas[8] = {500,587,659,698,784,880,988,1047};
 
 /* ---------- Canciones ---------- */
 typedef struct { uint16_t f; uint16_t ms; } nota_t;
