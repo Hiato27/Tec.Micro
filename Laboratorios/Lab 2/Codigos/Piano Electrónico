@@ -1,23 +1,15 @@
-/*
- * Piano_UART_ATmega328P.c
- * ATmega328P @ 16 MHz
- * - Buzzer: PB1 (D9, OC1A) usando Timer1 CTC con toggle
- * - UART0: 9600 8N1 (PD0 RX, PD1 TX)
- * - Pulsadores: A0..A5 (PC0..PC5), D2 (PD2), D3 (PD3) con pull-up
- */
-
 #define F_CPU 16000000UL
 #include <avr/io.h>
 #include <util/delay.h>
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ---------- Pines ---------- */
+/* Pines  */
 #define BUZZER_DDR   DDRB
 #define BUZZER_PORT  PORTB
 #define BUZZER_PIN   PB1              // OC1A (D9)
 
-/* Pulsadores: A0..A5 + D2 + D3 (pull-up) */
+/* Pulsadores: */
 static inline void teclas_ini(void){
     DDRC  &= ~0x3F;                   // PC0..PC5 entrada
     PORTC |=  0x3F;                   // pull-up
@@ -38,7 +30,7 @@ static int8_t leer_tecla(void){
     return -1;
 }
 
-/* ---------- UART 9600 8N1 ---------- */
+/*  UART 9600 8N1  */
 static void uart_ini(uint16_t ubrr){
     UBRR0H = (uint8_t)(ubrr>>8);
     UBRR0L = (uint8_t)ubrr;           // 16 MHz, 9600 -> UBRR=103
@@ -50,8 +42,8 @@ static void uart_print(const char* s){ while(*s) uart_tx(*s++); }
 static inline bool uart_rx_disponible(void){ return (UCSR0A & (1<<RXC0)); }
 static inline char uart_rx(void){ return UDR0; }
 
-/* ---------- Tonos con Timer1 CTC toggle en OC1A ---------- */
-/* OCR1A = F_CPU/(2*prescaler*freq) - 1 con prescaler=8 */
+/*  Tonos con Timer1 CTC toggle en OC1A  */
+
 static void tono_iniciar(uint16_t freq_hz){
     if(freq_hz == 0){
         TCCR1A = 0; TCCR1B = 0;
@@ -69,93 +61,18 @@ static inline void tono_detener(void){
     PORTB &= ~(1<<BUZZER_PIN);
 }
 
-/* ---------- Notas ---------- */
-static const uint16_t notas[8] = {500,587,659,698,784,880,988,1047};
+/*  Notas (Hz) — octava alta para mayor claridad --- */
+#define NOTA_DO        523   // Do  (C5)
+#define NOTA_RE        587   // Re  (D5)
+#define NOTA_MI        659   // Mi  (E5)
+#define NOTA_FA        698   // Fa  (F5)
+#define NOTA_SOL       784   // Sol (G5)
+#define NOTA_LA        880   // La  (A5)
+#define NOTA_SI        988   // Si  (B5)
+#define NOTA_DO_AGUDO 1047   // Do' (C6)
 
-/* ---------- Canciones ---------- */
-typedef struct { uint16_t f; uint16_t ms; } nota_t;
-
-static const nota_t cancion1[] = {
-    {262,250},{294,250},{330,250},{349,250},
-    {392,250},{440,250},{494,250},{523,500},
-    {0,150},{523,300},{0xFFFF,0}
+/* Mapa usado por el modo Piano */
+static const uint16_t notas[8] = {
+    NOTA_DO, NOTA_RE, NOTA_MI, NOTA_FA,
+    NOTA_SOL, NOTA_LA, NOTA_SI, NOTA_DO_AGUDO
 };
-static const nota_t cancion2[] = {
-    {330,300},{294,300},{262,300},{294,300},{330,300},{330,300},{330,600},
-    {294,300},{294,300},{294,600},{330,300},{392,300},{392,600},
-    {330,300},{294,300},{262,300},{294,300},{330,300},{330,300},{330,300},{330,300},
-    {294,300},{294,300},{330,300},{294,600},{262,700},
-    {0xFFFF,0}
-};
-
-/* Reproduce canción; aborta si llega 'S' por UART */
-static void reproducir_cancion(const nota_t* tema){
-    for(uint16_t i=0; tema[i].f != 0xFFFF; ++i){   // <--- cambio aquí
-        if(uart_rx_disponible()){
-            char a = uart_rx();
-            if(a=='S' || a=='s'){ tono_detener(); return; }
-        }
-        tono_iniciar(tema[i].f);
-        uint16_t t = tema[i].ms;
-        while(t--){
-            _delay_ms(1);
-            if(uart_rx_disponible()){
-                char a = uart_rx();
-                if(a=='S' || a=='s'){ tono_detener(); return; }
-            }
-        }
-    }
-    tono_detener();
-}
-
-/* ---------- UI ---------- */
-static void mostrar_menu(void){
-    uart_print("\r\n=== Piano 8 notas + UART ===\r\n");
-    uart_print("Pulsadores: A0..A5, D2, D3 -> Do Re Mi Fa Sol La Si Do'\r\n");
-    uart_print("Comandos: C1=cancion 1, C2=cancion 2, S=volver a piano\r\n> ");
-}
-
-/* ---------- Main ---------- */
-int main(void){
-    teclas_ini();
-    uart_ini(103);                      // 9600@16MHz
-    mostrar_menu();
-
-    bool tecla_en_uso = false;
-    int8_t tecla_ant = -1;
-
-    for(;;){
-        int8_t t = leer_tecla();
-        if(t >= 0){
-            if(!tecla_en_uso || t != tecla_ant){
-                tono_iniciar(notas[t]);
-                tecla_en_uso = true;
-                tecla_ant = t;
-            }
-        }else if(tecla_en_uso){
-            tono_detener();
-            tecla_en_uso = false;
-            tecla_ant = -1;
-        }
-
-        if(uart_rx_disponible()){
-            char c = uart_rx();
-            if(c=='C' || c=='c'){
-                while(!uart_rx_disponible());
-                char n = uart_rx();
-                tono_detener();
-                uart_print("\r\nReproduciendo C"); uart_tx(n); uart_print("...\r\n");
-                if(n=='1')      reproducir_cancion(cancion1);
-                else if(n=='2') reproducir_cancion(cancion2);
-                else            uart_print("Comando invalido\r\n");
-                mostrar_menu();
-            }else if(c=='S' || c=='s'){
-                tono_detener();
-                mostrar_menu();
-            }else{
-                uart_print("\r\nComando: C1/C2 o S\r\n> ");
-            }
-        }
-        _delay_ms(5); // anti-rebote simple
-    }
-}
