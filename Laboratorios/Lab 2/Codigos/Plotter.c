@@ -1,11 +1,13 @@
 #define F_CPU 16000000UL
 #include <avr/io.h>
 #include <stdint.h>
+#include <util/delay.h>
 
-
+/* UART */
 #define UBRR_9600 103u  /* 16 MHz, 9600 bps */
 
 /* Pines (PORTD)
+   PD2, PD3: auxiliares
    PD4: X+
    PD5: Y-
    PD6: X-
@@ -16,40 +18,63 @@
 #define PD_X_NEG  PD6
 #define PD_Y_POS  PD7
 
+/* Escalas */
+#define DELAY_TRI_SEG   16u
+#define DELAY_CRUZ_SEG  14u
+
+/* Prototipos UART */
 static void uart_init(void);
 static void uart_tx(uint8_t c);
 static uint8_t uart_rx(void);
 static void print_crlf(void);
 static void print_str(const char *s);
 
+/* Delays base */
 static void delay_1s(void);
-static void delay_25s(void);
 static void delay_2s(void);
 static void delay_3s(void);
 static void delay_10s(void);
+static void delay_25s(void);
 
-static void run_sequence(void);   /* Triangulo */
-static void run_sequence2(void);  /* Cruz */
-static void run_sequence3(void);  /* Circulo */
-static void print_menu(void);
+/* Delays dedicados */
+static void delay_tri(void);
+static void delay_cruz(void);
 
+/* Helpers de salida */
 static inline void out_delay(uint8_t mask, void (*delay_fn)(void)) {
     PORTD = mask;
     delay_fn();
 }
+static inline void out_delay_ms(uint8_t mask, uint16_t ms) {
+    PORTD = mask;
+    while (ms--) _delay_ms(1);
+}
 
+/* Figuras */
+static void run_sequence(void);   /* Triangulo */
+static void run_sequence2(void);  /* Cruz */
+static void run_sequence3(void);  /* Circulo */
+static void run_conejo(void);     /* Conejo */
+
+/* Menu */
+static void print_menu(void);
+
+/* Textos */
 static const char STR_BANNER[]  = "===== MENU PRINCIPAL =====\r\n";
 static const char STR_M1[]      = "1) Dibujar Triangulo\r\n";
 static const char STR_M2[]      = "2) Dibujar Circulo\r\n";
 static const char STR_M3[]      = "3) Dibujar Cruz\r\n";
 static const char STR_M4[]      = "T) Dibujar las 3 Figuras\r\n";
-static const char STR_PROMPT[]  = "Seleccione (1-T): ";
+static const char STR_M5[]      = "4) Dibujar Conejo\r\n";
+static const char STR_PROMPT[]  = "Seleccione (1-3,4 T): ";
 static const char STR_INV[]     = "\r\nOpcion invalida. Intente de nuevo.\r\n";
 static const char STR_H1[]      = "[Opcion 1: Iniciando Triangulo]";
 static const char STR_H2[]      = "[Opcion 3: Iniciando Cruz]";
-static const char STR_H3[]      = "[Opcion 2 Iniciando Circulo]";
-static const char STR_H4[]      = "[Opcion T Iniciado las 3 figuras]";
+static const char STR_H3[]      = "[Opcion 2: Iniciando Circulo]";
+static const char STR_H5[]      = "[Opcion 4: Iniciando Conejo]";
+static const char STR_H4[]      = "[Opcion T: Iniciando las 3 figuras]";
 
+/* INICIO */
 int main(void) {
     uart_init();
 
@@ -71,8 +96,8 @@ int main(void) {
 
         if (key == '1') {
             print_str(STR_H1); print_crlf();
-            out_delay((1u<<PD_X_POS), delay_25s);
-            out_delay((1u<<PD_X_POS), delay_25s);
+            out_delay((1u<<PD_X_POS), delay_tri);
+            out_delay((1u<<PD_X_POS), delay_tri);
             run_sequence();     /* Triangulo */
 
         } else if (key == '2') {
@@ -87,15 +112,19 @@ int main(void) {
 
         } else if (key == '3') {
             print_str(STR_H2); print_crlf();
-            out_delay((1u<<PD_Y_POS), delay_25s);
-            out_delay((1u<<PD_Y_POS), delay_25s);
-            out_delay((1u<<PD_Y_POS), delay_25s);
-            out_delay((1u<<PD_Y_POS), delay_25s);
-            out_delay((1u<<PD_X_POS), delay_25s);
-            out_delay((1u<<PD_X_POS), delay_25s);
-            out_delay((1u<<PD_X_POS), delay_25s);
-            out_delay((1u<<PD_X_POS), delay_25s);
+            out_delay((1u<<PD_Y_POS), delay_cruz);
+            out_delay((1u<<PD_Y_POS), delay_cruz);
+            out_delay((1u<<PD_Y_POS), delay_cruz);
+            out_delay((1u<<PD_Y_POS), delay_cruz);
+            out_delay((1u<<PD_X_POS), delay_cruz);
+            out_delay((1u<<PD_X_POS), delay_cruz);
+            out_delay((1u<<PD_X_POS), delay_cruz);
+            out_delay((1u<<PD_X_POS), delay_cruz);
             run_sequence2();    /* Cruz */
+
+        } else if (key == '4') {
+            print_str(STR_H5); print_crlf();
+            run_conejo();       /* Conejo */
 
         } else if (key == 'T') {
             print_str(STR_H4); print_crlf();
@@ -106,16 +135,15 @@ int main(void) {
         } else {
             print_str(STR_INV);
         }
-        /* volver al menú */
     }
 }
 
-/*UART*/
+/* UART */
 static void uart_init(void) {
     UBRR0H = (uint8_t)(UBRR_9600 >> 8);
     UBRR0L = (uint8_t)(UBRR_9600 & 0xFF);
     UCSR0A = 0x00;                          /* U2X0=0 */
-    UCSR0B = (1u<<RXEN0) | (1u<<TXEN0);     /* habilita RX/TX */
+    UCSR0B = (1u<<RXEN0) | (1u<<TXEN0);     /* RX/TX */
     UCSR0C = (1u<<UCSZ01) | (1u<<UCSZ00);   /* 8N1 */
 }
 static void uart_tx(uint8_t c) {
@@ -129,7 +157,7 @@ static uint8_t uart_rx(void) {
 static void print_crlf(void) { uart_tx(0x0D); uart_tx(0x0A); }
 static void print_str(const char *s) { while (*s) uart_tx((uint8_t)*s++); }
 
-/*DELAYS*/
+/* DELAYS */
 static void delay_1s(void) {
     for (uint8_t i = 0; i < 4; i++) {
         for (uint8_t j = 0; j < 200; j++) {
@@ -142,62 +170,75 @@ static void delay_1s(void) {
 static void delay_25s(void) { for (uint8_t n = 0; n < 8; n++) delay_1s(); }
 static void delay_2s(void)  { delay_1s(); delay_1s(); }
 static void delay_3s(void)  { delay_1s(); delay_1s(); delay_1s(); }
-static void delay_10s(void) { delay_1s(); delay_1s(); delay_1s(); delay_1s(); delay_1s(); delay_1s(); }
+static void delay_10s(void) { for (uint8_t n=0;n<10;n++) delay_1s(); }
 
-/*OPCION 1: TRIANGULO */
+static void delay_tri(void)  { for (uint8_t n = 0; n < DELAY_TRI_SEG;  n++) delay_1s(); }
+static void delay_cruz(void) { for (uint8_t n = 0; n < DELAY_CRUZ_SEG; n++) delay_1s(); }
+
+/* TRIANGULO */
 static void run_sequence(void) {
-    out_delay((1u<<PD_X_POS), delay_25s);
-    out_delay((1u<<PD_X_POS), delay_25s);
+    out_delay((1u<<PD_X_POS), delay_tri);
+    out_delay((1u<<PD_X_POS), delay_tri);
+    out_delay((1u<<PD_X_POS), delay_tri);
+    out_delay((1u<<PD_X_POS), delay_tri);
+    out_delay((1u<<PD_X_POS), delay_tri);
+    out_delay((1u<<PD_X_POS), delay_tri);
 
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
+    out_delay((1u<<PD_Y_POS), delay_tri);
+    out_delay((1u<<PD_Y_POS), delay_tri);
     out_delay((1u<<PD_Y_POS), delay_10s);
 
     out_delay((1u<<PD2),      delay_1s);
 
-    out_delay((1u<<PD_X_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
+    out_delay((1u<<PD_X_POS), delay_tri);
+    out_delay((1u<<PD_Y_POS), delay_tri);
 
-    out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_25s);
+    out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_tri);
 
-    out_delay((1u<<PD_X_POS), delay_25s);
+    out_delay((1u<<PD_X_POS), delay_tri);
     out_delay((1u<<PD3),      delay_1s);
 
     PORTD = 0x00;
 }
 
-/*OPCION 3: CRUZ */
+/* CRUZ */
 static void run_sequence2(void) {
     out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_25s);
+    out_delay((1u<<PD_X_POS), delay_cruz);
 
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
+    out_delay((1u<<PD_Y_POS), delay_cruz);
+    out_delay((1u<<PD_Y_POS), delay_cruz);
+    out_delay((1u<<PD_Y_POS), delay_cruz);
+    out_delay((1u<<PD_Y_POS), delay_cruz);
+    out_delay((1u<<PD_Y_POS), delay_cruz);
 
     out_delay((1u<<PD2),      delay_1s);
 
-    out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_25s);
+    out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_cruz);
 
     out_delay((1u<<PD3),      delay_1s);
-    out_delay((1u<<PD_X_POS), delay_25s);
+    out_delay((1u<<PD_X_POS), delay_cruz);
     out_delay((1u<<PD2),      delay_1s);
 
-    out_delay((1u<<PD_Y_POS)|(1u<<PD_Y_NEG), delay_25s); /* (PD7|PD5) */
-    out_delay((1u<<PD3),      delay_1s);
+    out_delay((1u<<PD_Y_POS)|(1u<<PD_Y_NEG), delay_cruz); /* (PD7|PD5) */
 
+    out_delay((1u<<PD3),      delay_1s);
     PORTD = 0x00;
 }
 
-/*OPCION 2: CIRCULO*/ 
+/* CIRCULO */
 static void run_sequence3(void) {
-    out_delay((1u<<PD_Y_NEG), delay_25s);
+    out_delay((1u<<PD_Y_POS), delay_25s);
+    out_delay((1u<<PD_Y_POS), delay_25s);
+    out_delay((1u<<PD_Y_POS), delay_25s);
+    out_delay((1u<<PD_Y_POS), delay_25s);
     out_delay((1u<<PD_Y_POS), delay_25s);
     out_delay((1u<<PD_Y_POS), delay_25s);
     out_delay((1u<<PD_Y_POS), delay_25s);
     out_delay((1u<<PD_Y_POS), delay_25s);
 
     out_delay((1u<<PD2),      delay_1s);
+
     out_delay((1u<<PD_X_NEG), delay_10s);
     out_delay((1u<<PD_X_POS), delay_1s);
     out_delay((1u<<PD_X_NEG), delay_3s);
@@ -285,17 +326,144 @@ static void run_sequence3(void) {
     out_delay((1u<<PD_Y_NEG), delay_1s);
     out_delay((1u<<PD_X_NEG), delay_3s);
     out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
+    out_delay((1u<<PD_X_NEG), delay_3s);
 
     out_delay((1u<<PD3),      delay_1s);
     PORTD = 0x00;
 }
 
+/* CONEJO */
+static void run_conejo(void) {
+    out_delay_ms((1u<<PD_X_POS), 5000);
+    out_delay_ms((1u<<PD_X_NEG), 5000);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_X_NEG), 1500);
+    out_delay_ms((1u<<PD_Y_NEG), 1500);
+    out_delay_ms((1u<<PD_Y_POS), 750);
+    out_delay_ms((1u<<PD_X_POS), 1500);
+    out_delay_ms((1u<<PD_X_NEG), 125);
+    out_delay_ms((1u<<PD_Y_NEG), 1375);
+    out_delay_ms((1u<<PD_X_NEG), 500);
+    out_delay_ms((1u<<PD_X_POS), 1375);
+    out_delay_ms((1u<<PD_X_NEG), 125);
+    out_delay_ms((1u<<PD_X_POS), 3000);
+    out_delay_ms((1u<<PD_Y_POS), 3000);
+    out_delay_ms((1u<<PD_Y_NEG), 4500);
+    out_delay_ms((1u<<PD_X_NEG), 750);
+    out_delay_ms((1u<<PD_X_POS), 1500);
+    out_delay_ms((1u<<PD_Y_POS), 125);
+    out_delay_ms((1u<<PD_Y_NEG), 1375);
+    out_delay_ms((1u<<PD_Y_POS), 500);
+    out_delay_ms((1u<<PD_X_POS), 1375);
+    out_delay_ms((1u<<PD_Y_POS), 125);
+    out_delay_ms((1u<<PD_X_NEG), 1500);
+    out_delay_ms((1u<<PD_X_NEG), 1500);
+    out_delay_ms((1u<<PD_Y_POS), 1500);
+
+    out_delay_ms((1u<<PD3), 100);
+    out_delay_ms((1u<<PD_X_NEG), 1125);
+    out_delay_ms((1u<<PD_X_POS), 375);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_X_POS), 750);
+    out_delay_ms((1u<<PD_Y_POS), 750);
+    out_delay_ms((1u<<PD_Y_NEG), 750);
+    out_delay_ms((1u<<PD_X_NEG), 750);
+    out_delay_ms((1u<<PD_Y_POS), 750);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    out_delay_ms((1u<<PD_Y_POS), 750);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_X_POS), 750);
+    out_delay_ms((1u<<PD_Y_POS), 750);
+    out_delay_ms((1u<<PD_Y_NEG), 750);
+    out_delay_ms((1u<<PD_X_NEG), 750);
+    out_delay_ms((1u<<PD_Y_POS), 750);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    out_delay_ms((1u<<PD_X_POS), 250);
+    out_delay_ms((1u<<PD_X_NEG), 750);
+    out_delay_ms((1u<<PD_X_POS), 750);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_X_NEG), 800);
+
+    for (int i = 0; i < 8; i++) {
+        out_delay_ms((1u<<PD_X_POS), 50);
+        out_delay_ms((1u<<PD_Y_POS), 50);
+    }
+    for (int i = 0; i < 8; i++) {
+        out_delay_ms((1u<<PD_Y_NEG), 50);
+        out_delay_ms((1u<<PD_Y_POS), 50);
+    }
+    for (int i = 0; i < 8; i++) {
+        out_delay_ms((1u<<PD_X_POS), 50);
+        out_delay_ms((1u<<PD_X_NEG), 50);
+    }
+
+    out_delay_ms((1u<<PD_X_POS), 750);
+    out_delay_ms((1u<<PD_X_NEG), 750);
+    out_delay_ms((1u<<PD_Y_NEG), 750);
+
+    out_delay_ms((1u<<PD_X_POS), 750);
+    out_delay_ms((1u<<PD_Y_POS), 750);
+
+    out_delay_ms((1u<<PD_Y_POS), 750);
+    out_delay_ms((1u<<PD_Y_NEG), 750);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    out_delay_ms((1u<<PD_Y_POS), 200);
+    out_delay_ms((1u<<PD_X_POS), 375);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_Y_POS), 750);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    out_delay_ms((1u<<PD_Y_NEG), 375);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_X_NEG), 750);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    out_delay_ms((1u<<PD_X_NEG), 1950);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_X_NEG), 750);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    out_delay_ms((1u<<PD_X_POS), 375);
+
+    out_delay_ms((1u<<PD2), 100);
+
+    out_delay_ms((1u<<PD_Y_POS), 375);
+
+    out_delay_ms((1u<<PD3), 100);
+
+    PORTD = 0x00;
+}
+
+/* MENU */
 static void print_menu(void) {
     print_str(STR_BANNER);
     print_str(STR_M1);
     print_str(STR_M2);
     print_str(STR_M3);
     print_str(STR_M4);
+    print_str(STR_M5);
     print_str(STR_PROMPT);
 }
