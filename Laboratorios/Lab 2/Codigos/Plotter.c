@@ -65,17 +65,17 @@ static const char STR_BANNER[]  = "===== MENU PRINCIPAL =====\r\n";
 static const char STR_M1[]      = "1) Dibujar Triangulo\r\n";
 static const char STR_M2[]      = "2) Dibujar Circulo\r\n";
 static const char STR_M3[]      = "3) Dibujar Cruz\r\n";
-static const char STR_M4[]      = "T) Dibujar las 3 Figuras\r\n";
 static const char STR_M5[]      = "4) Dibujar Conejo\r\n";
 static const char STR_M6[]      = "5) Dibujar Murcielago\r\n";
-static const char STR_PROMPT[]  = "Seleccione (1-3,4 T): ";
+static const char STR_M4[]      = "T) Dibujar todas las Figuras\r\n";
+static const char STR_PROMPT[]  = "Seleccione (1, 2, 3, 4, 5 o T): ";
 static const char STR_INV[]     = "\r\nOpcion invalida. Intente de nuevo.\r\n";
 static const char STR_H1[]      = "[Opcion 1: Iniciando Triangulo]";
 static const char STR_H2[]      = "[Opcion 3: Iniciando Cruz]";
 static const char STR_H3[]      = "[Opcion 2: Iniciando Circulo]";
 static const char STR_H5[]      = "[Opcion 4: Iniciando Conejo]";
 static const char STR_H6[]      = "[Opcion 5: Iniciando Conejo]";
-static const char STR_H4[]      = "[Opcion T: Iniciando las 3 figuras]";
+static const char STR_H4[]      = "[Opcion T: Iniciando todas las figuras]";
 
 /* INICIO */
 int main(void) {
@@ -215,15 +215,18 @@ static void run_sequence(void) {
 /* OPCION 3: CRUZ */
 static void run_sequence2(void) {
     out_delay((1u<<PD_X_POS), delay_3s);
+	out_delay((1u<<PD_X_POS), delay_3s);
+	out_delay((1u<<PD_X_POS), delay_3s);
     out_delay((1u<<PD_X_POS), delay_cruz);
-
-    out_delay((1u<<PD_Y_POS), delay_cruz);
-    out_delay((1u<<PD_Y_POS), delay_cruz);
-    out_delay((1u<<PD_Y_POS), delay_cruz);
+    out_delay((1u<<PD_X_POS), delay_3s);
+    out_delay((1u<<PD_X_POS), delay_3s);
+	out_delay((1u<<PD_X_POS), delay_3s);
+	out_delay((1u<<PD_X_POS), delay_3s);
     out_delay((1u<<PD_Y_POS), delay_cruz);
     out_delay((1u<<PD_Y_POS), delay_cruz);
     out_delay((1u<<PD_X_POS), delay_cruz);
 	out_delay((1u<<PD_X_POS), delay_cruz);
+
     out_delay((1u<<PD2),      delay_1s);
 
     out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_cruz);
@@ -353,8 +356,7 @@ static void run_sequence3(void) {
 
 /* CONEJO */
 static void run_conejo(void) {
-    out_delay_ms((1u<<PD_X_POS), 5000);
-    out_delay_ms((1u<<PD_X_NEG), 5000);
+    out_delay_ms((1u<<PD_X_POS), 10000);
 
     out_delay_ms((1u<<PD2), 100);
 
@@ -394,7 +396,7 @@ static void run_conejo(void) {
     out_delay_ms((1u<<PD_Y_POS), 750);
 
     out_delay_ms((1u<<PD3), 100);
-
+	
 	out_delay_ms((1u<<PD_X_NEG), 150);
 	out_delay_ms((1u<<PD_X_POS), 150);
 	 
@@ -502,7 +504,7 @@ static void run_conejo(void) {
 
     out_delay_ms((1u<<PD2), 100); 
 
-    out_delay_ms((1u<<PD_X_NEG), 750);
+    out_delay_ms((1u<<PD_X_NEG), 750); 
 
     out_delay_ms((1u<<PD3), 100); 
 
@@ -514,7 +516,7 @@ static void run_conejo(void) {
 
     out_delay_ms((1u<<PD3), 100);
 	
-	   out_delay_ms((1u<<PD_X_POS), 400);
+	   out_delay_ms((1u<<PD_X_POS), 400); 
 
 	    out_delay_ms((1u<<PD2), 100);
 
@@ -535,7 +537,7 @@ static void run_murcielago(void) {
 	  out_delay_ms((1u<<PD_Y_POS), 16000);
 
 	  out_delay_ms((1u<<PD2), 100);
-
+	
 	 out_delay_ms((1u<<PD_X_NEG), 200);
 	for (int i = 0; i < 8; i++) {
 	 out_delay_ms((1u<<PD_Y_NEG), 150);
@@ -555,7 +557,7 @@ static void run_murcielago(void) {
 		 out_delay_ms((1u<<PD_X_POS), 150);
 	 }
 	  out_delay_ms((1u<<PD_X_NEG), 200);
-
+	 
 	   out_delay_ms((1u<<PD_X_POS), 500);
 	   for (int i = 0; i < 8; i++) {
 		   out_delay_ms((1u<<PD_X_NEG), 150);
@@ -575,7 +577,7 @@ static void run_murcielago(void) {
 	  
 		out_delay_ms((1u<<PD_Y_POS), 6000);
 	  
-	
+	 
 	    out_delay_ms((1u<<PD_Y_NEG), 500);
 	    for (int i = 0; i < 8; i++) {
 		    out_delay_ms((1u<<PD_Y_POS), 150);
@@ -591,7 +593,7 @@ static void run_murcielago(void) {
 	    out_delay_ms((1u<<PD_Y_NEG), 500);
 		out_delay_ms((1u<<PD_X_NEG), 150);
 	out_delay_ms((1u<<PD3), 100);  
-
+	
 	out_delay_ms((1u<<PD_X_POS), 500);
 	out_delay_ms((1u<<PD_X_NEG), 1100);
 	out_delay_ms((1u<<PD2), 100);
@@ -612,7 +614,7 @@ static void run_murcielago(void) {
 	out_delay_ms((1u<<PD_X_NEG), 900);
 	out_delay_ms((1u<<PD3), 100);
 	
-
+	
 	out_delay_ms((1u<<PD_X_POS), 1500);
 	out_delay_ms((1u<<PD2), 100);
 	out_delay_ms((1u<<PD_Y_POS), 4800);
@@ -639,7 +641,7 @@ static void run_murcielago(void) {
 		
 		out_delay_ms((1u<<PD3), 100);
 		
-	out_delay_ms((1u<<PD_Y_NEG), 4000);
+	out_delay_ms((1u<<PD_Y_NEG), 12000);
 	out_delay_ms((1u<<PD_X_NEG), 18000);
 	PORTD = 0x00;
 }
