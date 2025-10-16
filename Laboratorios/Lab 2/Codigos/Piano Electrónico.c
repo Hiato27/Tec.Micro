@@ -170,3 +170,71 @@ static const nota_t cancion2[] = {
 	{523,150},{554,150},{587,150},{466,150},{494,300},{0,300},
 	{FIN_CANCION,0}
 };
+// Reproductor 
+static void reproducir_cancion(const nota_t* tema){
+	for(uint16_t i=0; tema[i].f != FIN_CANCION; ++i){
+		if(uart_rx_disponible()){
+			char a = uart_rx();
+			if(a=='S'||a=='s'||a=='P'||a=='p'){ tono_detener(); return; }
+		}
+		uint16_t dur_total = escalar_ms(tema[i].ms);
+		uint16_t dur_on    = (uint16_t)(((uint32_t)dur_total * GATE_PCT)/100);
+		uint16_t dur_rest  = dur_total - dur_on;
+
+		tono_iniciar(tema[i].f);
+
+		for(uint16_t t=0; t<dur_on; ++t){
+			_delay_ms(1);
+			if(uart_rx_disponible()){
+				char a = uart_rx();
+				if(a=='S'||a=='s'||a=='P'||a=='p'){ tono_detener(); return; }
+			}
+		}
+
+		tono_detener();
+
+		while(dur_rest--){
+			_delay_ms(1);
+			if(uart_rx_disponible()){
+				char a = uart_rx();
+				if(a=='S'||a=='s'||a=='P'||a=='p'){ return; }
+			}
+		}
+	}
+	tono_detener();
+}
+
+// UI 
+static void mostrar_menu(void){
+	uart_print("Comandos: C1, C2, P=Piano, S=Stop\r\n> ");
+}
+
+// Main 
+int main(void){
+	teclas_ini();
+	uart_ini(103);   // 9600 @ 16 MHz
+	mostrar_menu();
+
+	bool   sonando     = false;
+	int8_t tecla_act   = -1;
+
+	for(;;){
+		
+		int8_t t = leer_tecla_estable();
+
+		if(t >= 0){
+			if(!sonando || t != tecla_act){
+				// Arranque limpio: siempre reinicia el timer y el contador 
+				tono_iniciar(notas[t]);
+				sonando   = true;
+				tecla_act = t;
+			}
+			}else if(sonando){
+			// Se requiere de una tecla no estable para cortar (evita cortes por rebote) 
+			int8_t chk = leer_tecla_estable();
+			if(chk < 0){
+				tono_detener();
+				sonando   = false;
+				tecla_act = -1;
+			}
+		}
