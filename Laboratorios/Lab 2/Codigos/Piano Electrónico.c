@@ -206,7 +206,7 @@ static void reproducir_cancion(const nota_t* tema){
 
 // UI 
 static void mostrar_menu(void){
-	uart_print("Comandos: C1, C2, P=Piano, S=Stop\r\n> ");
+	uart_print("Comandos: C1, C2, P=Piano, S=Stop> ");
 }
 
 // Main 
