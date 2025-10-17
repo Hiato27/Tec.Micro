@@ -238,3 +238,43 @@ int main(void){
 				tecla_act = -1;
 			}
 		}
+        // Comandos UART
+		if(uart_rx_disponible()){
+			char c = uart_rx();
+
+			if(c=='\r' || c=='\n'){
+				// Se ignora el enter
+
+				}else if(c=='C' || c=='c'){   // C + número de canción
+				while(!uart_rx_disponible());
+				char n = uart_rx();
+				if(n=='\r' || n=='\n'){ while(!uart_rx_disponible()); n = uart_rx(); }
+
+				tono_detener();
+				uart_print("\r\nReproduciendo C"); uart_tx(n); uart_print("...\r\n");
+
+				if(n=='1')      reproducir_cancion(cancion1);
+				else if(n=='2') reproducir_cancion(cancion2);
+				else            uart_print("Comando inválido\r\n");
+
+				mostrar_menu();
+
+				}else if(c=='P' || c=='p'){   // Piano
+				tono_detener();
+				uart_print("\r\n[PIANO]\r\n");
+				mostrar_menu();
+
+				}else if(c=='S' || c=='s'){   // Stop
+				tono_detener();
+				uart_print("\r\n[STOP]\r\n");
+				mostrar_menu();
+
+				}else{
+				uart_print("\r\nComandos: C1, C2, P=Piano, S=Stop> ");
+			}
+		}
+
+		_delay_ms(2);
+	}
+}
+
