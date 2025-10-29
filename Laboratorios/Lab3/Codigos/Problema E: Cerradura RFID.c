@@ -1,3 +1,16 @@
+// ============================================================================
+// Cerradura RFID con RC522 + LCD I2C + EEPROM + UART + LEDs + Botones (+Relé)
+// ATmega328P @16MHz | AVR-GCC | Microchip Studio
+// ----------------------------------------------------------------------------
+// Pines:
+// RC522 (3.3V): RST->D9(PB1), SS/SDA->D10(PB2), MOSI->D11(PB3), MISO->D12(PB4), SCK->D13(PB5)
+// LCD I2C (5V): SDA->A4(PC4), SCL->A5(PC5) (0x27/0x3F/0x20)
+// LEDs: Verde->D6(PD6), Rojo->D7(PD7)
+// Botones (a GND, pull-up): ACTUALIZAR->D2(PD2), BORRAR->D3(PD3)
+// Relé: D5(PD5) con NPN + diodo (o módulo)
+// EEPROM: Byte0=0xA5 (flag), Bytes1..4: UID[0..3]
+// ============================================================================
+
 #ifndef F_CPU
 #define F_CPU 16000000UL
 #endif
