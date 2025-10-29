@@ -1,452 +1,441 @@
-// ============================================================================
-// Cerradura RFID con RC522 + LCD I2C + EEPROM + UART + LEDs + Botones (+Relé)
-// ATmega328P @16MHz | AVR-GCC | Microchip Studio
-// ----------------------------------------------------------------------------
-// Pines:
-// RC522 (3.3V): RST->D9(PB1), SS/SDA->D10(PB2), MOSI->D11(PB3), MISO->D12(PB4), SCK->D13(PB5)
-// LCD I2C (5V): SDA->A4(PC4), SCL->A5(PC5) (0x27/0x3F/0x20)
-// LEDs: Verde->D6(PD6), Rojo->D7(PD7)
-// Botones (a GND, pull-up): ACTUALIZAR->D2(PD2), BORRAR->D3(PD3)
-// Relé: D5(PD5) con NPN + diodo (o módulo)
-// EEPROM: Byte0=0xA5 (flag), Bytes1..4: UID[0..3]
-// ============================================================================
-
 #ifndef F_CPU
 #define F_CPU 16000000UL
 #endif
-#define UART_BAUD 9600
 
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/interrupt.h>
 #include <avr/eeprom.h>
-#include <avr/wdt.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
 
-/* ================= UART ================= */
-#define UBRR_VAL ((F_CPU/16UL/((unsigned long)UART_BAUD))-1UL)
-static void uart_init(void){
-	UBRR0H = (uint8_t)(UBRR_VAL>>8);
-	UBRR0L = (uint8_t)UBRR_VAL;
+
+//  UART 
+
+static void uart_init(uint16_t ubrr){
+	UBRR0H = (uint8_t)(ubrr>>8);
+	UBRR0L = (uint8_t)ubrr;
 	UCSR0B = (1<<TXEN0);
-	UCSR0C = (1<<UCSZ01)|(1<<UCSZ00);  // 8N1
+	UCSR0C = (1<<UCSZ01)|(1<<UCSZ00); // 8N1
 }
-static void uart_tx(uint8_t d){ while(!(UCSR0A&(1<<UDRE0))); UDR0=d; }
-static void uart_print(const char*s){ while(*s) uart_tx((uint8_t)*s++); }
-static void uprintf(const char*fmt,...){ char b[192]; va_list ap; va_start(ap,fmt); vsnprintf(b,sizeof(b),fmt,ap); va_end(ap); uart_print(b); }
-
-/* ================= LEDS ================= */
-#define LED_OK_DDR DDRD
-#define LED_OK_PORT PORTD
-#define LED_OK_PIN PD6
-#define LED_ER_DDR DDRD
-#define LED_ER_PORT PORTD
-#define LED_ER_PIN PD7
-static inline void led_ok_on(void){ LED_OK_PORT |= (1<<LED_OK_PIN); }
-static inline void led_ok_off(void){ LED_OK_PORT &= ~(1<<LED_OK_PIN); }
-static inline void led_er_on(void){ LED_ER_PORT |= (1<<LED_ER_PIN); }
-static inline void led_er_off(void){ LED_ER_PORT &= ~(1<<LED_ER_PIN); }
-
-/* ================ I2C / LCD ================= */
-#define TWI_FREQ 100000UL
-static void twi_init(void){
-	TWSR = 0x00; // prescaler=1
-	TWBR = (uint8_t)((F_CPU/TWI_FREQ - 16) / 2);
+static void uart_putc(char c){
+	while(!(UCSR0A & (1<<UDRE0)));
+	UDR0 = c;
 }
-static uint8_t twi_start_write(uint8_t addr7){
-	TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
-	while(!(TWCR&(1<<TWINT)));
-	TWDR = (addr7<<1); // write
-	TWCR = (1<<TWINT)|(1<<TWEN);
-	while(!(TWCR&(1<<TWINT)));
-	return ((TWSR & 0xF8) == 0x18) ? 0 : 1; // 0=ACK
+static void uart_print(const char *s){
+	while(*s) uart_putc(*s++);
 }
-static void twi_write(uint8_t d){ TWDR=d; TWCR=(1<<TWINT)|(1<<TWEN); while(!(TWCR&(1<<TWINT))); }
-static void twi_stop(void){ TWCR=(1<<TWINT)|(1<<TWEN)|(1<<TWSTO); }
-
-// LCD PCF8574 (4-bit)
-#define EN 0x04
-#define RS 0x01
-static uint8_t LCD_ADDR = 0x27;
-static uint8_t BL_MASK = 0x08; // backlight activo alto
-static void pcf_send(uint8_t v){ if (twi_start_write(LCD_ADDR)==0){ twi_write(v | BL_MASK); } twi_stop(); }
-static void lcd_pulse(uint8_t d){ pcf_send(d|EN); _delay_us(1); pcf_send(d&~EN); _delay_us(50); }
-static void lcd_send4(uint8_t n){ lcd_pulse(n); }
-static void lcd_send(uint8_t v, uint8_t mode){ uint8_t hi=v&0xF0, lo=(v<<4)&0xF0; lcd_send4(hi|mode); lcd_send4(lo|mode); }
-static void lcd_cmd(uint8_t c){ lcd_send(c,0x00); }
-static void lcd_data(uint8_t d){ lcd_send(d,RS); }
-static void lcd_clear(void){ lcd_cmd(0x01); _delay_ms(2); }
-static void lcd_set(uint8_t c,uint8_t r){ static const uint8_t A[2]={0x00,0x40}; lcd_cmd(0x80 | (A[r&1] + (c&0x0F))); }
-static void lcd_print(const char*s){ while(*s) lcd_data((uint8_t)*s++); }
-static bool lcd_try_init_with(uint8_t addr, bool bl_high){
-	LCD_ADDR=addr; BL_MASK= bl_high?0x08:0x00;
-	if (twi_start_write(LCD_ADDR)!=0){ twi_stop(); return false; }
-	twi_stop(); _delay_ms(40);
-	pcf_send(0x00);
-	lcd_send4(0x30); _delay_ms(5);
-	lcd_send4(0x30); _delay_us(150);
-	lcd_send4(0x30); _delay_us(150);
-	lcd_send4(0x20); _delay_us(150);
-	lcd_cmd(0x28); // 4-bit, 2 líneas, 5x8
-	lcd_cmd(0x0C); // display ON, cursor OFF
-	lcd_cmd(0x06); // entry mode
-	lcd_clear();
-	return true;
+static void uart_print_hex8(uint8_t v){
+	static const char HEX[]="0123456789ABCDEF";
+	uart_putc(HEX[(v>>4)&0xF]);
+	uart_putc(HEX[v&0xF]);
+}
+static void uart_print_hex_array(const uint8_t *buf, uint8_t n){
+	for(uint8_t i=0;i<n;i++){
+		uart_print_hex8(buf[i]);
+		if(i<n-1) uart_putc(':');
+	}
 }
 
-/* ================= SPI ================= */
-static inline void spi_set_mode_speed(uint8_t mode, uint8_t spr1, uint8_t spr0, uint8_t spi2x){
+
+// SPI 
+
+static void spi_init(void){
+	// SS(PB2), MOSI(PB3), SCK(PB5) salidas; MISO(PB4) entrada
 	DDRB |= (1<<PB2)|(1<<PB3)|(1<<PB5);
 	DDRB &= ~(1<<PB4);
-	PORTB |= (1<<PB2); // SS HIGH
-	SPCR = (1<<SPE)|(1<<MSTR) | (spr1? (1<<SPR1):0) | (spr0? (1<<SPR0):0);
-	switch(mode){
-		case 0: SPCR &= ~((1<<CPOL)|(1<<CPHA)); break;
-		case 1: SPCR = (SPCR & ~(1<<CPOL)) | (1<<CPHA); break;
-		case 2: SPCR = (SPCR & ~(1<<CPHA)) | (1<<CPOL); break;
-		case 3: SPCR |= (1<<CPOL)|(1<<CPHA); break;
-	}
-	if (spi2x) SPSR |= (1<<SPI2X); else SPSR &= ~(1<<SPI2X);
+	// SPI enable, Master, Mode0, fosc/8
+	SPCR = (1<<SPE)|(1<<MSTR)|(0<<CPOL)|(0<<CPHA)|(0<<SPR1)|(0<<SPR0);
+	SPSR = (1<<SPI2X);
+	// SS alto por defecto
+	PORTB |= (1<<PB2);
 }
-static inline void SS_LOW(void){ PORTB &= ~(1<<PB2); }
-static inline void SS_HIGH(void){ PORTB |=  (1<<PB2); }
-static inline uint8_t spi_tr(uint8_t d){ SPDR=d; while(!(SPSR&(1<<SPIF))); return SPDR; }
-
-/* ================= RC522 ================= */
-#define RST_PIN PB1
-// Registros
-#define VersionReg    0x37
-#define CommandReg    0x01
-#define CommIEnReg    0x02
-#define CommIrqReg    0x04
-#define ErrorReg      0x06
-#define FIFODataReg   0x09
-#define FIFOLevelReg  0x0A
-#define ControlReg    0x0C
-#define BitFramingReg 0x0D
-#define ModeReg       0x11
-#define TxControlReg  0x14
-#define TxASKReg      0x15
-#define RFCfgReg      0x26
-#define TModeReg      0x2A
-#define TPrescalerReg 0x2B
-#define TReloadRegH   0x2C
-#define TReloadRegL   0x2D
-// Comandos
-#define PCD_TRANSCEIVE 0x0C
-#define PCD_SOFTRESET  0x0F
-#define PICC_REQIDL        0x26
-#define PICC_ANTICOLL_CL1  0x93
-
-static inline void rc_write_addr(uint8_t reg){ spi_tr((reg<<1)&0x7E); }
-static inline void rc_read_addr (uint8_t reg){ spi_tr(((reg<<1)&0x7E)|0x80); }
-static void rc_write(uint8_t reg,uint8_t val){ SS_LOW(); _delay_us(2); rc_write_addr(reg); spi_tr(val); _delay_us(1); SS_HIGH(); }
-static uint8_t rc_read(uint8_t reg){ uint8_t v; SS_LOW(); _delay_us(2); rc_read_addr(reg); v=spi_tr(0x00); _delay_us(1); SS_HIGH(); return v; }
-static void rc_setBitMask(uint8_t reg, uint8_t mask){ rc_write(reg, rc_read(reg)|mask); }
-static void rc_clrBitMask(uint8_t reg, uint8_t mask){ rc_write(reg, rc_read(reg)&(~mask)); }
-
-static void rc_reset_pin_init(void){ DDRB|=(1<<RST_PIN); PORTB&=~(1<<RST_PIN); _delay_ms(10); PORTB|=(1<<RST_PIN); _delay_ms(50); }
-static void rc_softreset(void){ rc_write(CommandReg, PCD_SOFTRESET); _delay_ms(50); }
-static void rc_init_core(void){
-	rc_softreset();
-	rc_write(TModeReg, 0x8D);
-	rc_write(TPrescalerReg, 0x3E);
-	rc_write(TReloadRegL, 0x1E);
-	rc_write(TReloadRegH, 0x00);
-	rc_write(TxASKReg, 0x40);   // 100% ASK
-	rc_write(ModeReg,  0x3D);   // CRC preset
-	rc_write(RFCfgReg, 0x7F);   // ganancia alta
-	uint8_t v = rc_read(TxControlReg);
-	if ((v & 0x03) != 0x03) rc_write(TxControlReg, v | 0x03); // antena ON
+static uint8_t spi_transfer(uint8_t data){
+	SPDR = data;
+	while(!(SPSR & (1<<SPIF)));
+	return SPDR;
 }
 
-// Autodetección SPI (Modo 0..3 y /128,/64,/32,/16). Devuelve true si hay versión válida.
-static bool rc522_autoprobe(uint8_t *outVer){
-	const uint8_t sp[4][3] = {{1,1,0},{1,0,0},{0,1,0},{0,0,0}}; // /128,/64,/32,/16
-	for (uint8_t mode=0; mode<4; mode++){
-		for (uint8_t s=0; s<4; s++){
-			spi_set_mode_speed(mode, sp[s][0], sp[s][1], sp[s][2]);
-			_delay_ms(5);
-			rc_softreset();
-			uint8_t v = rc_read(VersionReg);
-			if (v==0x91 || v==0x92 || v==0x88){ *outVer=v; return true; }
-		}
-	}
-	*outVer = rc_read(VersionReg);
-	return false;
-}
 
-// TX/RX
-static uint8_t rc_transceive(uint8_t *tx, uint8_t txLen, uint8_t *rx, uint8_t *rxBits){
-	uint8_t waitIrq = 0x30; // RxIRq | IdleIrq
-	rc_write(CommIEnReg, waitIrq | 0x80);
-	rc_clrBitMask(CommIrqReg, 0x80);
-	rc_setBitMask(FIFOLevelReg, 0x80);
-	for (uint8_t i=0;i<txLen;i++) rc_write(FIFODataReg, tx[i]);
-	rc_write(CommandReg, PCD_TRANSCEIVE);
-	rc_setBitMask(BitFramingReg, 0x80); // StartSend
-	uint16_t i=3000; uint8_t n;
-	do { n=rc_read(CommIrqReg); i--; } while(i && !(n&0x01) && !(n&0x30));
-	rc_clrBitMask(BitFramingReg, 0x80);
-	if (i==0) return 1;                      // timeout
-	if (rc_read(ErrorReg) & 0x13) return 2;  // errores
-	uint8_t fifo = rc_read(FIFOLevelReg);
-	for(uint8_t j=0;j<fifo;j++) rx[j]=rc_read(FIFODataReg);
-	uint8_t lastBits = rc_read(ControlReg) & 0x07;
-	*rxBits = (fifo ? (fifo-1)*8 + lastBits : 0);
+// I2C 
+
+static void i2c_init(void){
+	TWSR = 0x00; // prescaler = 1
+	TWBR = 72;   // ~100 kHz @ 16 MHz
+}
+static uint8_t i2c_start(uint8_t addr_rw){
+	TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
+	TWDR = addr_rw;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
 	return 0;
 }
-
-// Lee UID de 4 bytes (CL1)
-static uint8_t rc_read_uid(uint8_t *uid4){
-	uint8_t rx[16]; uint8_t bits;
-	rc_write(BitFramingReg, 0x07);           // REQA: 7 bits
-	uint8_t reqa[1] = {PICC_REQIDL};
-	if (rc_transceive(reqa, 1, rx, &bits) != 0 || bits != 16){ rc_write(BitFramingReg, 0x00); return 0; }
-	rc_write(BitFramingReg, 0x00);           // bytes completos
-	uint8_t anticoll[] = {PICC_ANTICOLL_CL1, 0x20};
-	if (rc_transceive(anticoll, sizeof(anticoll), rx, &bits) != 0 || bits < 5*8) return 0;
-	for (uint8_t i=0;i<4;i++) uid4[i] = rx[i];
-	return 4;
+static void i2c_write(uint8_t data){
+	TWDR = data;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
+}
+static void i2c_stop(void){
+	TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWSTO);
 }
 
-/* ========= BOTONES / EEPROM / RELÉ ========= */
-#define RELAY_ACTIVE_LOW 0         // poné 1 si tu módulo de relé es activo-bajo
-#define RELAY_DDR DDRD
-#define RELAY_PORT PORTD
-#define RELAY_PIN PD5
-static inline void relay_on(void){
-	#if RELAY_ACTIVE_LOW
-	RELAY_PORT &= ~(1<<RELAY_PIN);
-	#else
-	RELAY_PORT |=  (1<<RELAY_PIN);
-	#endif
+
+// LCD I2C 
+
+#ifndef LCD_I2C_ADDR
+#define LCD_I2C_ADDR 0x27   // Cambiar a 0x3F si tu backpack lo requiere
+#endif
+// PCF8574: P7..P0 = D7 D6 D5 D4 BL EN RW RS
+#define LCD_BL 0x08
+static uint8_t lcd_bl = LCD_BL;
+
+static void lcd_i2c_send(uint8_t v){
+	i2c_start((LCD_I2C_ADDR<<1)|0);
+	i2c_write(v | lcd_bl);
+	i2c_stop();
 }
-static inline void relay_off(void){
-	#if RELAY_ACTIVE_LOW
-	RELAY_PORT |=  (1<<RELAY_PIN);
-	#else
-	RELAY_PORT &= ~(1<<RELAY_PIN);
-	#endif
+static void lcd_pulse(uint8_t data){
+	lcd_i2c_send(data | 0x04); // EN=1
+	_delay_us(1);
+	lcd_i2c_send(data & ~0x04); // EN=0
+	_delay_us(50);
+}
+static void lcd_write4(uint8_t nibble, uint8_t rs){
+	uint8_t data = (nibble & 0xF0) | (rs?0x01:0x00);
+	lcd_pulse(data);
+}
+static void lcd_cmd(uint8_t c){
+	lcd_write4(c & 0xF0, 0);
+	lcd_write4((c<<4) & 0xF0, 0);
+}
+static void lcd_data(uint8_t d){
+	lcd_write4(d & 0xF0, 1);
+	lcd_write4((d<<4) & 0xF0, 1);
+}
+static void lcd_init(void){
+	i2c_init();
+	_delay_ms(40);
+	lcd_write4(0x30,0); _delay_ms(5);
+	lcd_write4(0x30,0); _delay_us(150);
+	lcd_write4(0x20,0);
+	lcd_cmd(0x28); // 4-bit, 2 líneas
+	lcd_cmd(0x0C); // display ON, cursor off
+	lcd_cmd(0x06); // entry mode
+	lcd_cmd(0x01); _delay_ms(2);
+}
+static void lcd_clear(void){
+	lcd_cmd(0x01); _delay_ms(2);
+}
+static void lcd_set_cursor(uint8_t col, uint8_t row){
+	static const uint8_t base[] = {0x00,0x40,0x14,0x54};
+	lcd_cmd(0x80 | (base[row] + col));
+}
+static void lcd_print(const char *s){
+	while(*s) lcd_data(*s++);
 }
 
-// Botones (pull-up)
-#define BTN_UPD_PINP PIND
-#define BTN_UPD_PORT PORTD
-#define BTN_UPD_DDR DDRD
-#define BTN_UPD_PIN PD2 // ACTUALIZAR
-#define BTN_DEL_PINP PIND
-#define BTN_DEL_PORT PORTD
-#define BTN_DEL_DDR DDRD
-#define BTN_DEL_PIN PD3 // BORRAR
-static bool button_pressed(volatile uint8_t *pinx, uint8_t bit){
-	if (((*pinx)&(1<<bit))==0){ _delay_ms(20); return (((*pinx)&(1<<bit))==0); }
-	return false;
+
+//  EEPROM UTIL 
+
+#define EE_MAGIC       0xA5
+#define EE_ADDR_MAGIC  0
+#define EE_ADDR_LEN    1
+#define EE_ADDR_UID    2   // hasta 10 bytes
+
+static bool ee_has_card(void){
+	uint8_t m = eeprom_read_byte((uint8_t*)EE_ADDR_MAGIC);
+	uint8_t l = eeprom_read_byte((uint8_t*)EE_ADDR_LEN);
+	return (m==EE_MAGIC && l>0 && l<=10);
+}
+static void ee_clear_card(void){
+	eeprom_write_byte((uint8_t*)EE_ADDR_MAGIC, 0xFF);
+	eeprom_write_byte((uint8_t*)EE_ADDR_LEN,   0x00);
+}
+static void ee_write_card(const uint8_t *uid, uint8_t len){
+	eeprom_write_byte((uint8_t*)EE_ADDR_MAGIC, EE_MAGIC);
+	eeprom_write_byte((uint8_t*)EE_ADDR_LEN,   len);
+	for(uint8_t i=0;i<len;i++)
+	eeprom_write_byte((uint8_t*)(EE_ADDR_UID+i), uid[i]);
+}
+static uint8_t ee_read_card(uint8_t *uid_out){
+	uint8_t len = eeprom_read_byte((uint8_t*)EE_ADDR_LEN);
+	for(uint8_t i=0;i<len;i++)
+	uid_out[i] = eeprom_read_byte((uint8_t*)(EE_ADDR_UID+i));
+	return len;
 }
 
-// EEPROM
-#define EEPROM_FLAG_ADDR ((uint8_t*)0)
-#define EEPROM_UID_ADDR  ((uint8_t*)1)
-#define EEPROM_FLAG_VALUE (0xA5)
-static bool uid_eq(const uint8_t*a,const uint8_t*b){ return a[0]==b[0] && a[1]==b[1] && a[2]==b[2] && a[3]==b[3]; }
-static bool eeprom_read_uid(uint8_t uid4[4]){
-	uint8_t flag=eeprom_read_byte(EEPROM_FLAG_ADDR);
-	if(flag!=EEPROM_FLAG_VALUE) return false;
-	for(uint8_t i=0;i<4;i++) uid4[i]=eeprom_read_byte(EEPROM_UID_ADDR+i);
+
+//  RC522
+
+// Pines
+#define RC522_SS_PORT  PORTB
+#define RC522_SS_DDR   DDRB
+#define RC522_SS_PIN   PB2
+#define RC522_RST_PORT PORTB
+#define RC522_RST_DDR  DDRB
+#define RC522_RST_PIN  PB1
+
+#define SS_LOW()   (RC522_SS_PORT &= ~(1<<RC522_SS_PIN))
+#define SS_HIGH()  (RC522_SS_PORT |=  (1<<RC522_SS_PIN))
+
+// Registros
+#define CommandReg     0x01
+#define CommIrqReg     0x04
+#define ErrorReg       0x06
+#define FIFODataReg    0x09
+#define FIFOLevelReg   0x0A
+#define ControlReg     0x0C
+#define BitFramingReg  0x0D
+#define ModeReg        0x11
+#define TxControlReg   0x14
+#define TxASKReg       0x15
+#define CRCResultRegH  0x21
+#define CRCResultRegL  0x22
+#define TModeReg       0x2A
+#define TPrescalerReg  0x2B
+#define TReloadRegH    0x2C
+#define TReloadRegL    0x2D
+
+// Comandos
+#define PCD_IDLE       0x00
+#define PCD_TRANSCEIVE 0x0C
+#define PCD_SOFTRESET  0x0F
+
+// PICC
+#define PICC_REQIDL    0x26
+#define PICC_ANTICOLL  0x93
+#define PICC_HALT      0x50
+
+static uint8_t rc522_read(uint8_t reg){
+	uint8_t addr = ((reg<<1)&0x7E) | 0x80; // read
+	SS_LOW();
+	spi_transfer(addr);
+	uint8_t val = spi_transfer(0x00);
+	SS_HIGH();
+	return val;
+}
+static void rc522_write(uint8_t reg, uint8_t val){
+	uint8_t addr = ((reg<<1)&0x7E); // write
+	SS_LOW();
+	spi_transfer(addr);
+	spi_transfer(val);
+	SS_HIGH();
+}
+static void rc522_setBitMask(uint8_t reg, uint8_t mask){
+	rc522_write(reg, rc522_read(reg) | mask);
+}
+static void rc522_clearBitMask(uint8_t reg, uint8_t mask){
+	rc522_write(reg, rc522_read(reg) & (~mask));
+}
+static void mfrc522_resetPinInit(void){
+	RC522_RST_DDR |= (1<<RC522_RST_PIN);
+	RC522_SS_DDR  |= (1<<RC522_SS_PIN);
+	RC522_RST_PORT &= ~(1<<RC522_RST_PIN);
+	_delay_ms(10);
+	RC522_RST_PORT |=  (1<<RC522_RST_PIN);
+	_delay_ms(50);
+	SS_HIGH();
+}
+static void mfrc522_reset(void){
+	rc522_write(CommandReg, PCD_SOFTRESET);
+	_delay_ms(50);
+}
+static void mfrc522_init(void){
+	mfrc522_reset();
+	// Temporizadores/modulación 106 kbps
+	rc522_write(TModeReg,      0x8D);
+	rc522_write(TPrescalerReg, 0x3E);
+	rc522_write(TReloadRegL,   30);
+	rc522_write(TReloadRegH,   0);
+	rc522_write(TxASKReg, 0x40); // 100% ASK
+	rc522_write(ModeReg,  0x3D); // CRC ON, MSB first
+	// Antena ON
+	uint8_t v = rc522_read(TxControlReg);
+	if(!(v & 0x03)) rc522_write(TxControlReg, v | 0x03);
+	_delay_ms(5);
+}
+// Lee UID de 4 bytes (anticolisión nivel 1). Devuelve true si ok.
+static bool mfrc522_read_uid(uint8_t *uid, uint8_t *uid_len){
+	*uid_len = 0;
+	// REQA (7 bits)
+	rc522_write(FIFOLevelReg, 0x80);
+	rc522_write(BitFramingReg, 0x07);
+	rc522_write(FIFODataReg, PICC_REQIDL);
+	rc522_write(CommandReg, PCD_TRANSCEIVE);
+	rc522_setBitMask(BitFramingReg, 0x80);
+	uint16_t t=1000; uint8_t irq;
+	do { irq = rc522_read(CommIrqReg); t--; } while(!(irq & 0x30) && t);
+	rc522_clearBitMask(BitFramingReg, 0x80);
+	if(t==0) return false;
+
+	// Anticolisión
+	rc522_write(BitFramingReg, 0x00);
+	rc522_write(FIFOLevelReg, 0x80);
+	rc522_write(FIFODataReg, PICC_ANTICOLL);
+	rc522_write(FIFODataReg, 0x20);
+	rc522_write(CommandReg, PCD_TRANSCEIVE);
+	rc522_setBitMask(BitFramingReg, 0x80);
+	t=1000;
+	do { irq = rc522_read(CommIrqReg); t--; } while(!(irq & 0x30) && t);
+	rc522_clearBitMask(BitFramingReg, 0x80);
+	if(t==0) return false;
+
+	uint8_t n = rc522_read(FIFOLevelReg);
+	if(n < 5) return false;
+
+	for(uint8_t i=0;i<5;i++){
+		uint8_t v = rc522_read(FIFODataReg);
+		if(i<4) uid[i] = v; // BCC se descarta
+	}
+	*uid_len = 4;
+
+	// HALT
+	rc522_write(FIFOLevelReg, 0x80);
+	rc522_write(FIFODataReg,  PICC_HALT);
+	rc522_write(FIFODataReg,  0x00);
+	rc522_write(CommandReg,   PCD_TRANSCEIVE);
+	rc522_setBitMask(BitFramingReg, 0x80);
+	_delay_ms(1);
+	rc522_clearBitMask(BitFramingReg, 0x80);
+
 	return true;
 }
-static void eeprom_write_uid(const uint8_t uid4[4]){
-	eeprom_write_byte(EEPROM_FLAG_ADDR, EEPROM_FLAG_VALUE);
-	for(uint8_t i=0;i<4;i++) eeprom_write_byte(EEPROM_UID_ADDR+i, uid4[i]);
+
+
+//  APLICACIÓN 
+
+// Pines de usuario (tu pinout)
+#define LED_VERDE_PIN  PD6
+#define LED_ROJO_PIN   PD7
+#define RELE_PIN       PD5   // opcional
+
+#define BTN_ACT_PIN    PD2   // actualizar/registrar
+#define BTN_DEL_PIN    PD3   // borrar
+
+static void gpio_init(void){
+	// LEDs + RELÉ salidas
+	DDRD |= (1<<LED_VERDE_PIN)|(1<<LED_ROJO_PIN)|(1<<RELE_PIN);
+	PORTD &= ~((1<<LED_VERDE_PIN)|(1<<LED_ROJO_PIN)|(1<<RELE_PIN));
+	// Botones con pull-up
+	DDRD &= ~((1<<BTN_ACT_PIN)|(1<<BTN_DEL_PIN));
+	PORTD |=  (1<<BTN_ACT_PIN)|(1<<BTN_DEL_PIN);
 }
-static void eeprom_clear_uid(void){
-	eeprom_write_byte(EEPROM_FLAG_ADDR, 0xFF);
-	for(uint8_t i=0;i<4;i++) eeprom_write_byte(EEPROM_UID_ADDR+i, 0xFF);
+
+static bool btn_pressed(uint8_t pin){
+	if(!(PIND & (1<<pin))){
+		_delay_ms(20);
+		if(!(PIND & (1<<pin))){
+			while(!(PIND & (1<<pin))); // esperar soltar
+			_delay_ms(10);
+			return true;
+		}
+	}
+	return false;
 }
-
-/* ============ UI: máquina de estados de LCD (para evitar parpadeo) ============ */
-typedef enum {
-	UI_WELCOME,
-	UI_INITING,
-	UI_RC522_OK,
-	UI_RC522_FAIL,
-	UI_NO_CARD_STORED,
-	UI_PROMPT_CARD,
-	UI_ACCESS_OK,
-	UI_ACCESS_DENY,
-	UI_REG_NEW,
-	UI_REG_SAVED,
-	UI_ERASED,
-	UI_TIMEOUT
-} ui_state_t;
-
-static ui_state_t ui_last = (ui_state_t)255;
-
-static void ui_show(ui_state_t st, uint8_t verOpt){
-	if (st == ui_last) return; // no actualizar si es la misma pantalla
-	ui_last = st;
-	switch(st){
-		case UI_WELCOME:
-		lcd_clear(); lcd_set(0,0); lcd_print("Bienvenido al");
-		lcd_set(0,1); lcd_print("sistema RFID");
-		break;
-		case UI_INITING:
-		lcd_clear(); lcd_set(0,0); lcd_print("Inicializando...");
-		break;
-		case UI_RC522_OK:{
-			char hex[5]; snprintf(hex,sizeof(hex),"%02X",verOpt);
-			lcd_clear(); lcd_set(0,0); lcd_print("RC522 Ver:0x"); lcd_print(hex);
-			lcd_set(0,1); lcd_print("SPI OK");
-		} break;
-		case UI_RC522_FAIL:
-		lcd_clear(); lcd_set(0,0); lcd_print("RC522 sin resp.");
-		lcd_set(0,1); lcd_print("Rev 3V3/RST/SS");
-		break;
-		case UI_NO_CARD_STORED:
-		lcd_clear(); lcd_set(0,0); lcd_print("Sin tarjeta");
-		lcd_set(0,1); lcd_print("Pres ACTUAL");
-		break;
-		case UI_PROMPT_CARD:
-		lcd_clear(); lcd_set(0,0); lcd_print("Acerque su");
-		lcd_set(0,1); lcd_print("tarjeta...");
-		break;
-		case UI_ACCESS_OK:
-		lcd_clear(); lcd_set(0,0); lcd_print("Acceso permitido");
-		lcd_set(0,1); lcd_print("Bienvenido");
-		break;
-		case UI_ACCESS_DENY:
-		lcd_clear(); lcd_set(0,0); lcd_print("Acceso denegado");
-		lcd_set(0,1); lcd_print("UID distinto");
-		break;
-		case UI_REG_NEW:
-		lcd_clear(); lcd_set(0,0); lcd_print("Registro nuevo");
-		lcd_set(0,1); lcd_print("Acerque tarjeta");
-		break;
-		case UI_REG_SAVED:
-		lcd_clear(); lcd_set(0,0); lcd_print("Nueva tarjeta");
-		lcd_set(0,1); lcd_print("registrada");
-		break;
-		case UI_ERASED:
-		lcd_clear(); lcd_set(0,0); lcd_print("Tarjeta borrada");
-		lcd_set(0,1); lcd_print("Acerque nueva");
-		break;
-		case UI_TIMEOUT:
-		lcd_clear(); lcd_set(0,0); lcd_print("Tiempo agotado");
-		lcd_set(0,1); lcd_print("Intente de nuevo");
-		break;
-		default: break;
+static bool uid_equals(const uint8_t *a, const uint8_t *b, uint8_t len){
+	for(uint8_t i=0;i<len;i++) if(a[i]!=b[i]) return false;
+	return true;
+}
+static void acceso_ok(void){
+	PORTD |=  (1<<LED_VERDE_PIN);
+	PORTD &= ~(1<<LED_ROJO_PIN);
+	PORTD |=  (1<<RELE_PIN);          // abrir
+	_delay_ms(800);
+	PORTD &= ~(1<<RELE_PIN);
+	PORTD &= ~(1<<LED_VERDE_PIN);
+}
+static void acceso_denegado(void){
+	for(uint8_t i=0;i<3;i++){
+		PORTD |=  (1<<LED_ROJO_PIN);
+		_delay_ms(150);
+		PORTD &= ~(1<<LED_ROJO_PIN);
+		_delay_ms(120);
 	}
 }
 
-/* ================= MAIN ================= */
 int main(void){
-	// --- Diagnóstico reset + apagar Watchdog ---
-	uint8_t cause = MCUSR;   // guarda causa
-	MCUSR = 0;               // limpia flags
-	wdt_disable();           // apaga WDT por si venía activo
+	// UART 9600
+	#define BAUD 9600
+	#define MY_UBRR (F_CPU/16/BAUD-1)
+	uart_init(MY_UBRR);
 
-	// LEDs
-	LED_OK_DDR |= (1<<LED_OK_PIN);
-	LED_ER_DDR |= (1<<LED_ER_PIN);
-	led_ok_off(); led_er_off();
+	gpio_init();
+	lcd_init();
+	spi_init();
+	mfrc522_resetPinInit();
+	mfrc522_init();
 
-	// Relé
-	RELAY_DDR |= (1<<RELAY_PIN);
-	relay_off();
+	lcd_clear();
+	lcd_print("Bienvenido RFID");
+	lcd_set_cursor(0,1); lcd_print("Acerque tarjeta");
+	uart_print("\r\n== Sistema RFID iniciado ==\r\n");
 
-	// Botones: entradas con pull-up
-	BTN_UPD_DDR &= ~(1<<BTN_UPD_PIN); BTN_UPD_PORT |= (1<<BTN_UPD_PIN);
-	BTN_DEL_DDR &= ~(1<<BTN_DEL_PIN); BTN_DEL_PORT |= (1<<BTN_DEL_PIN);
+	uint8_t uid[10], uid_len;
+	uint8_t mem_uid[10]; uint8_t mem_len = 0;
 
-	// UART (para ver causa de reset y logs)
-	uart_init();
-	uprintf("\r\n== RFID LOCK ==  Reset cause=0x%02X  (PORF=%d BORF=%d EXTRF=%d WDRF=%d)\r\n",
-	cause, (cause>>0)&1, (cause>>2)&1, (cause>>1)&1, (cause>>3)&1);
-
-	// I2C + LCD
-	twi_init();
-	bool lcd_ok=false; const uint8_t addrs[]={0x27,0x3F,0x20};
-	for(uint8_t ia=0; ia<sizeof(addrs); ia++){
-		if (lcd_ok) break;
-		if (lcd_try_init_with(addrs[ia], true))  { lcd_ok=true; break; }
-		if (lcd_try_init_with(addrs[ia], false)) { lcd_ok=true; break; }
-	}
-	if(lcd_ok) ui_show(UI_WELCOME, 0), _delay_ms(900), ui_show(UI_INITING, 0);
-
-	// RC522: RST y AUTODETECCIÓN SPI
-	rc_reset_pin_init();
-	uint8_t ver=0x00;
-	bool ok = rc522_autoprobe(&ver);
-	if(lcd_ok) ui_show(ok? UI_RC522_OK : UI_RC522_FAIL, ver);
-	uprintf("RC522 VersionReg=0x%02X (%s)\r\n", ver, ok? "OK":"NO");
-	if(!ok){
-		while(1){ _delay_ms(500); } // queda indicando error en LCD
+	if(ee_has_card()){
+		mem_len = ee_read_card(mem_uid);
+		uart_print("Tarjeta registrada: ");
+		uart_print_hex_array(mem_uid, mem_len);
+		uart_print("\r\n");
+		} else {
+		uart_print("Sin tarjeta registrada.\r\n");
 	}
 
-	// Inicialización completa del RC522
-	rc_init_core();
-
-	// EEPROM: cargar UID maestro
-	uint8_t master_uid[4]; bool has_master = eeprom_read_uid(master_uid);
-	if(lcd_ok) ui_show(has_master? UI_PROMPT_CARD : UI_NO_CARD_STORED, 0);
-
-	uint8_t uid[10]={0};
-
-	// ----------- LOOP PRINCIPAL -----------
 	while(1){
-		// BOTON BORRAR
-		if (button_pressed(&BTN_DEL_PINP, BTN_DEL_PIN)){
-			eeprom_clear_uid(); has_master=false; led_er_on(); led_ok_off(); relay_off();
-			if(lcd_ok) ui_show(UI_ERASED, 0);
-			uart_print("EEPROM: tarjeta borrada\r\n"); _delay_ms(800); led_er_off();
+		// Borrar tarjeta (BTN DEL)
+		if(btn_pressed(BTN_DEL_PIN)){
+			ee_clear_card();
+			mem_len = 0;
+			lcd_clear();
+			lcd_print("Tarjeta borrada");
+			lcd_set_cursor(0,1); lcd_print("Registre nueva");
+			uart_print("Tarjeta borrada.\r\n");
+			_delay_ms(900);
+			lcd_clear(); lcd_print("Acerque tarjeta");
 		}
 
-		// BOTON ACTUALIZAR (REGISTRAR NUEVA)
-		if (button_pressed(&BTN_UPD_PINP, BTN_UPD_PIN)){
-			if(lcd_ok) ui_show(UI_REG_NEW, 0);
-			uart_print("Registro: acerque nueva tarjeta...\r\n");
-			uint16_t tout=4000; bool grabado=false;
-			while(tout--){
-				memset(uid,0,sizeof(uid));
-				if (rc_read_uid(uid)==4){
-					eeprom_write_uid(uid); memcpy(master_uid,uid,4); has_master=true;
-					if(lcd_ok) ui_show(UI_REG_SAVED, 0);
-					uprintf("Nueva UID: %02X:%02X:%02X:%02X\r\n", uid[0],uid[1],uid[2],uid[3]);
-					grabado=true; _delay_ms(900);
-					break;
+		// Registrar/Actualizar (BTN ACT)
+		if(btn_pressed(BTN_ACT_PIN)){
+			lcd_clear(); lcd_print("Modo registro");
+			lcd_set_cursor(0,1); lcd_print("Acerque tarjeta");
+			uart_print("Modo registro: acerque tarjeta...\r\n");
+			bool ok=false;
+			for(uint16_t to=3000; to>0; to--){
+				if(mfrc522_read_uid(uid, &uid_len) && uid_len>=4){
+					ee_write_card(uid, uid_len);
+					memcpy(mem_uid, uid, uid_len); mem_len = uid_len;
+					lcd_clear(); lcd_print("Nueva tarjeta");
+					lcd_set_cursor(0,1); lcd_print("registrada");
+					uart_print("Nueva tarjeta: ");
+					uart_print_hex_array(uid, uid_len); uart_print("\r\n");
+					ok=true; break;
 				}
 				_delay_ms(1);
 			}
-			if(!grabado){ if(lcd_ok) ui_show(UI_TIMEOUT, 0); uart_print("Registro cancelado por timeout.\r\n"); _delay_ms(900); }
-			if(lcd_ok) ui_show(UI_PROMPT_CARD, 0);
-		}
-
-		// MODO NORMAL
-		if(lcd_ok && ui_last!=UI_PROMPT_CARD && ui_last!=UI_ACCESS_OK && ui_last!=UI_ACCESS_DENY)
-		ui_show(UI_PROMPT_CARD, 0);
-
-		memset(uid,0,sizeof(uid));
-		if (rc_read_uid(uid)==4){
-			uprintf("Leida: %02X:%02X:%02X:%02X\r\n", uid[0],uid[1],uid[2],uid[3]);
-			if (has_master && uid_eq(uid, master_uid)){
-				led_ok_on(); led_er_off(); relay_on();
-				if(lcd_ok) ui_show(UI_ACCESS_OK, 0);
-				uart_print("ACCESO PERMITIDO\r\n");
-				_delay_ms(1500);
-				relay_off(); led_ok_off();
-				if(lcd_ok) ui_show(UI_PROMPT_CARD, 0);
-				} else {
-				led_er_on(); led_ok_off(); relay_off();
-				if(lcd_ok) ui_show(UI_ACCESS_DENY, 0);
-				uart_print("DENEGADO\r\n");
-				_delay_ms(1200);
-				led_er_off();
-				if(lcd_ok) ui_show(UI_PROMPT_CARD, 0);
+			if(!ok){
+				lcd_clear(); lcd_print("No detectada");
+				uart_print("Tiempo de registro agotado.\r\n");
 			}
+			_delay_ms(900);
+			lcd_clear(); lcd_print("Acerque tarjeta");
 		}
 
-		_delay_ms(120);
+		// Verificación normal
+		if(mfrc522_read_uid(uid, &uid_len) && uid_len>=4){
+			uart_print("UID leido: "); uart_print_hex_array(uid, uid_len); uart_print("\r\n");
+			if(mem_len>0 && uid_equals(uid, mem_uid, mem_len)){
+				lcd_clear(); lcd_print("Acceso permitido");
+				acceso_ok();
+				lcd_clear(); lcd_print("Acerque tarjeta");
+				} else {
+				lcd_clear(); lcd_print("Acceso denegado");
+				acceso_denegado();
+				lcd_clear(); lcd_print("Acerque tarjeta");
+			}
+			_delay_ms(300);
+		}
 	}
 }
