@@ -13,6 +13,11 @@
 #define LED_PIN      PD2
 #define LED_MASK     (1<<LED_PIN)
 
+#define BTN_PINREG   PIND
+#define BTN_DDR      DDRD
+#define BTN_PORT     PORTD
+#define BTN_PIN      PD3    // botón joystick (activo LOW)
+
 #define ADC_MEDIO    512
 #define ZONA_MUERTA  80
 
@@ -30,11 +35,7 @@ static uint8_t col_verde = 0;
 static uint8_t col_azul  = 0;
 
 static uint8_t idx_xy(uint8_t x, uint8_t y){
-    if(y % 2 == 0){
-        return y*ANCHO + x;
-    } else {
-        return y*ANCHO + (ANCHO-1-x);
-    }
+    return (y * ANCHO) + x;
 }
 
 static void actualizar_buf(void){
@@ -94,8 +95,8 @@ static void enviar_matriz(void){
 }
 
 static void adc_init(void){
-    ADMUX  = (1<<REFS0); 
-    ADCSRA = (1<<ADEN)|(1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0); 
+    ADMUX  = (1<<REFS0);
+    ADCSRA = (1<<ADEN)|(1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0);
 }
 
 static uint16_t adc_leer(uint8_t canal){
@@ -105,40 +106,86 @@ static uint16_t adc_leer(uint8_t canal){
     return ADC;
 }
 
+// leer joystick 
+static void leer_joy(int8_t *mov_x, int8_t *mov_y){
+    uint16_t val_x = adc_leer(1); // A1
+    uint16_t val_y = adc_leer(0); // A0
+
+    int16_t crudo_x = 0;
+    int16_t crudo_y = 0;
+
+    if(val_x > (ADC_MEDIO + ZONA_MUERTA)) crudo_x = +1;
+    else if(val_x < (ADC_MEDIO - ZONA_MUERTA)) crudo_x = -1;
+    else crudo_x = 0;
+
+    if(val_y > (ADC_MEDIO + ZONA_MUERTA)) crudo_y = -1; // arriba
+    else if(val_y < (ADC_MEDIO - ZONA_MUERTA)) crudo_y = +1; // abajo
+    else crudo_y = 0;
+
+    // eje dominante -> sin diagonales
+    int16_t ax = (crudo_x<0)? -crudo_x : crudo_x;
+    int16_t ay = (crudo_y<0)? -crudo_y : crudo_y;
+
+    if(ax > ay){
+        *mov_x = (crudo_x>0)? +1 : (crudo_x<0? -1:0);
+        *mov_y = 0;
+    } else if(ay > ax){
+        *mov_y = (crudo_y>0)? +1 : (crudo_y<0? -1:0);
+        *mov_x = 0;
+    } else {
+        *mov_x = 0;
+        *mov_y = 0;
+    }
+}
+
+static bool boton_apretado(void){
+    return ( (BTN_PINREG & (1<<BTN_PIN)) == 0 );
+}
+
 int main(void){
     LED_DDR  |= LED_MASK;
     LED_PORT &= ~LED_MASK;
 
+    BTN_DDR  &= ~(1<<BTN_PIN);
+    BTN_PORT |=  (1<<BTN_PIN);
+
     adc_init();
 
+    bool listo_mover = true; 
+    bool btn_ant = false;
+
     while(1){
-        uint16_t val_x = adc_leer(1); // VRx en A1
-        uint16_t val_y = adc_leer(0); // VRy en A0
+        int8_t mov_x, mov_y;
+        leer_joy(&mov_x, &mov_y);
 
-        int8_t mov_x = 0;
-        int8_t mov_y = 0;
+        if(listo_mover){
+            if(mov_x != 0 || mov_y != 0){
+                int16_t nx = pos_x + mov_x;
+                int16_t ny = pos_y + mov_y;
 
-        if(val_x > (ADC_MEDIO + ZONA_MUERTA)) mov_x = +1;
-        else if(val_x < (ADC_MEDIO - ZONA_MUERTA)) mov_x = -1;
+                if(nx < 0) nx = 0;
+                if(nx > 7) nx = 7;
+                if(ny < 0) ny = 0;
+                if(ny > 7) ny = 7;
 
-        if(val_y > (ADC_MEDIO + ZONA_MUERTA)) mov_y = -1; // arriba
-        else if(val_y < (ADC_MEDIO - ZONA_MUERTA)) mov_y = +1; // abajo
+                pos_x = (uint8_t)nx;
+                pos_y = (uint8_t)ny;
 
-        // Actualizar posición 
-        int16_t nueva_x = pos_x + mov_x;
-        int16_t nueva_y = pos_y + mov_y;
+                actualizar_buf();
+                enviar_matriz();
 
-        if(nueva_x < 0) nueva_x = 0;
-        if(nueva_x > 7) nueva_x = 7;
-        if(nueva_y < 0) nueva_y = 0;
-        if(nueva_y > 7) nueva_y = 7;
+                listo_mover = false;
+            }
+        } else {
+            if(mov_x == 0 && mov_y == 0){
+                listo_mover = true;
+            }
+        }
 
-        pos_x = (uint8_t)nueva_x;
-        pos_y = (uint8_t)nueva_y;
+ 
+        bool btn_now = boton_apretado();
+        btn_ant = btn_now;
 
-        actualizar_buf();
-        enviar_matriz();
-
-        _delay_ms(120); 
+        _delay_ms(20);
     }
 }
