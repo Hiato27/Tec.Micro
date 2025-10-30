@@ -10,9 +10,9 @@
 #include <stdint.h>
 #include <string.h>
 
-// ===============================================================
-// --------------------------- UART ------------------------------
-// ===============================================================
+
+// UART 
+
 static void uart_init(uint16_t ubrr){
 	UBRR0H = (uint8_t)(ubrr>>8);
 	UBRR0L = (uint8_t)ubrr;
@@ -38,20 +38,17 @@ static void uart_print_hex_array(const uint8_t *buf, uint8_t n){
 	}
 }
 
-// ===============================================================
-// ---------------------------- SPI ------------------------------
-// ===============================================================
-// -> Ajustado a fosc/16 (más tolerante con clones RC522)
-// -> SIN SPI2X
+
+// SPI 
+
 static void spi_init(void){
 	// SS(PB2), MOSI(PB3), SCK(PB5) salidas; MISO(PB4) entrada
 	DDRB |= (1<<PB2)|(1<<PB3)|(1<<PB5);
 	DDRB &= ~(1<<PB4);
-	// SPI enable, Master, Mode0, fosc/16
+	// SPI enable, Master, Mode0, BAJA VELOCIDAD: fosc/16 (sin SPI2X)
 	SPCR = (1<<SPE)|(1<<MSTR)|(0<<CPOL)|(0<<CPHA)|(0<<SPR1)|(1<<SPR0);
-	SPSR = 0; // sin SPI2X
-	// SS alto por defecto
-	PORTB |= (1<<PB2);
+	SPSR = 0; // sin doble velocidad
+	PORTB |= (1<<PB2); // SS alto por defecto
 }
 static uint8_t spi_transfer(uint8_t data){
 	SPDR = data;
@@ -59,9 +56,9 @@ static uint8_t spi_transfer(uint8_t data){
 	return SPDR;
 }
 
-// ===============================================================
-// ----------------------------- I2C -----------------------------
-// ===============================================================
+
+//  I2C 
+
 static void i2c_init(void){
 	TWSR = 0x00; // prescaler = 1
 	TWBR = 72;   // ~100 kHz @ 16 MHz
@@ -83,11 +80,11 @@ static void i2c_stop(void){
 	TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWSTO);
 }
 
-// ===============================================================
-// --------------------------- LCD I2C ---------------------------
-// ===============================================================
+
+//  LCD I2C 
+/* Cambiar 0x27 por 0x3F si tu backpack usa esa dirección */
 #ifndef LCD_I2C_ADDR
-#define LCD_I2C_ADDR 0x27   // Cambiar a 0x3F si tu backpack lo requiere
+#define LCD_I2C_ADDR 0x27
 #endif
 // PCF8574: P7..P0 = D7 D6 D5 D4 BL EN RW RS
 #define LCD_BL 0x08
@@ -138,9 +135,8 @@ static void lcd_print(const char *s){
 	while(*s) lcd_data(*s++);
 }
 
-// ===============================================================
-// ------------------------- EEPROM UTIL -------------------------
-// ===============================================================
+
+//  EEPROM UTIL 
 #define EE_MAGIC       0xA5
 #define EE_ADDR_MAGIC  0
 #define EE_ADDR_LEN    1
@@ -168,9 +164,8 @@ static uint8_t ee_read_card(uint8_t *uid_out){
 	return len;
 }
 
-// ===============================================================
-// ---------------------------- RC522 ----------------------------
-// ===============================================================
+//  RC522 
+
 // Pines
 #define RC522_SS_PORT  PORTB
 #define RC522_SS_DDR   DDRB
@@ -211,7 +206,6 @@ static uint8_t ee_read_card(uint8_t *uid_out){
 #define PICC_ANTICOLL  0x93
 #define PICC_HALT      0x50
 
-// --- SPI access helpers
 static uint8_t rc522_read(uint8_t reg){
 	uint8_t addr = ((reg<<1)&0x7E) | 0x80; // read
 	SS_LOW();
@@ -233,8 +227,6 @@ static void rc522_setBitMask(uint8_t reg, uint8_t mask){
 static void rc522_clearBitMask(uint8_t reg, uint8_t mask){
 	rc522_write(reg, rc522_read(reg) & (~mask));
 }
-
-// --- Reset/init
 static void mfrc522_resetPinInit(void){
 	RC522_RST_DDR |= (1<<RC522_RST_PIN);
 	RC522_SS_DDR  |= (1<<RC522_SS_PIN);
@@ -263,25 +255,25 @@ static void mfrc522_init(void){
 	_delay_ms(5);
 }
 
-// --- Debug helpers (nuevos)
+// DEBUG extra: versión y estado de antena 
 static uint8_t rc522_get_version(void){ return rc522_read(VersionReg); }
 static void rc522_debug_info(void){
 	uint8_t ver = rc522_get_version();
 	uart_print("RC522 VersionReg=0x"); uart_print_hex8(ver); uart_print("\r\n");
 	uint8_t tc = rc522_read(TxControlReg);
-	uart_print("TxControlReg=0x"); uart_print_hex8(tc);
-	uart_print(" (antenna "); uart_print((tc & 0x03) ? "ON" : "OFF"); uart_print(")\r\n");
+	uart_print("TxControlReg=0x"); uart_print_hex8(tc); uart_print(" (antenna ");
+	uart_print((tc & 0x03) ? "ON" : "OFF"); uart_print(")\r\n");
 }
 
-// --- Leer UID (ajustada: limpia IRQs + timeouts ampliados)
+// Lee UID (anticolisión nivel 1) con limpieza de IRQs y timeouts amplios
 static bool mfrc522_read_uid(uint8_t *uid, uint8_t *uid_len){
 	*uid_len = 0;
 
-	// --- REQA (7 bits) ---
-	rc522_write(CommandReg,   PCD_IDLE);
+	//  REQA (7 bits) 
+	rc522_write(CommandReg, PCD_IDLE);
 	rc522_write(FIFOLevelReg, 0x80);     // Flush FIFO
 	rc522_write(CommIrqReg,   0x7F);     // Limpiar IRQs
-	rc522_write(BitFramingReg,0x07);     // 7 bits
+	rc522_write(BitFramingReg, 0x07);    // 7 bits
 	rc522_write(FIFODataReg,  PICC_REQIDL);
 	rc522_write(CommandReg,   PCD_TRANSCEIVE);
 	rc522_setBitMask(BitFramingReg, 0x80); // StartSend
@@ -291,7 +283,7 @@ static bool mfrc522_read_uid(uint8_t *uid, uint8_t *uid_len){
 	rc522_clearBitMask(BitFramingReg, 0x80);
 	if(t==0) return false; // no hay tarjeta cerca
 
-	// --- ANTICOLISIÓN NIVEL 1 ---
+	//  ANTICOLISION NIVEL 1 
 	rc522_write(CommandReg,   PCD_IDLE);
 	rc522_write(FIFOLevelReg, 0x80);
 	rc522_write(CommIrqReg,   0x7F);
@@ -315,7 +307,7 @@ static bool mfrc522_read_uid(uint8_t *uid, uint8_t *uid_len){
 	}
 	*uid_len = 4;
 
-	// --- HALT ---
+	//  HALT 
 	rc522_write(CommandReg,   PCD_IDLE);
 	rc522_write(FIFOLevelReg, 0x80);
 	rc522_write(CommIrqReg,   0x7F);
@@ -329,10 +321,7 @@ static bool mfrc522_read_uid(uint8_t *uid, uint8_t *uid_len){
 	return true;
 }
 
-// ===============================================================
-// ------------------------- APLICACIÓN --------------------------
-// ===============================================================
-// Pines de usuario (tu pinout)
+//  APLICACIÓN 
 #define LED_VERDE_PIN  PD6
 #define LED_ROJO_PIN   PD7
 #define RELE_PIN       PD5   // opcional
@@ -393,7 +382,7 @@ int main(void){
 	mfrc522_resetPinInit();
 	mfrc522_init();
 
-	// ---- DEBUG: versión y estado de antena
+	// DEBUG: mostrar versión y antena
 	rc522_debug_info();
 
 	lcd_clear();
@@ -432,7 +421,7 @@ int main(void){
 			lcd_set_cursor(0,1); lcd_print("Acerque tarjeta");
 			uart_print("Modo registro: acerque tarjeta...\r\n");
 			bool ok=false;
-			for(uint16_t to=3000; to>0; to--){
+			for(uint16_t to=4000; to>0; to--){ // timeout un poco mayor
 				if(mfrc522_read_uid(uid, &uid_len) && uid_len>=4){
 					ee_write_card(uid, uid_len);
 					memcpy(mem_uid, uid, uid_len); mem_len = uid_len;
