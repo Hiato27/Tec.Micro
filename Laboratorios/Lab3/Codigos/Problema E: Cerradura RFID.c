@@ -1,258 +1,453 @@
-/* RFID RC522 + LCD I2C (hd44780) + EEPROM — pines según tu wiring */
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
 
-#include <SPI.h>
-#include <MFRC522.h>
-#include <Wire.h>
-#include <EEPROM.h>
+#include <avr/io.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+#include <avr/eeprom.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
-// Reemplazo de LiquidCrystal_I2C por hd44780 
-#include <hd44780.h>
-#include <hd44780ioClass/hd44780_I2Cexp.h>
-hd44780_I2Cexp lcd; // autodetecta PCF8574
-
-//  Pines 
-const uint8_t PIN_RFID_SS  = 10;
-const uint8_t PIN_RFID_RST = 9;
-const uint8_t PIN_LED_OK   = 6;
-const uint8_t PIN_LED_NO   = 7;
-const uint8_t PIN_BTN_ADD  = 2;
-const uint8_t PIN_BTN_DEL  = 3;
-
-//  RFID
-MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);
-
-//  EEPROM
-const int EEPROM_MAGIC_ADDR = 0;
-const uint8_t MAGIC[4] = { 'R','F','I','D' };
-const uint8_t MAX_SLOTS = 20;
-const uint8_t SLOT_SIZE = 11;
-const int SLOTS_START = 16;
-const uint8_t EMPTY_SIZE = 0x00;
-
-//  Botones / debounce 
-struct Btn {
-  uint8_t pin;
-  bool lastStableHigh = true;
-  bool lastReadHigh   = true;
-  unsigned long lastChangeMs = 0;
-  const unsigned long debounceMs = 30;
-  bool pressedEdge = false;
-  unsigned long pressedAtMs = 0;
-};
-Btn btnAdd { PIN_BTN_ADD };
-Btn btnDel { PIN_BTN_DEL };
-
-// Estado 
-uint8_t lastUID[10];
-uint8_t lastUIDLen = 0;
-bool    lastUIDValid = false;
-
-//  Helpers 
-void lcdCenterLine(uint8_t row, const String &msg) {
-  lcd.setCursor(0, row);
-  String pad(16, ' ');
-  int start = max(0, (16 - (int)msg.length())/2);
-  lcd.print(pad);
-  lcd.setCursor(start, row);
-  lcd.print(msg.substring(0,16));
+/* UART */
+static void uart_init(uint16_t ubrr){
+	UBRR0H = (uint8_t)(ubrr>>8);
+	UBRR0L = (uint8_t)ubrr;
+	UCSR0B = (1<<TXEN0);
+	UCSR0C = (1<<UCSZ01)|(1<<UCSZ00); // 8N1
+}
+static void uart_putc(char c){
+	while(!(UCSR0A & (1<<UDRE0)));
+	UDR0 = c;
+}
+static void uart_print(const char *s){
+	while(*s) uart_putc(*s++);
+}
+static void uart_print_hex8(uint8_t v){
+	static const char HEX[]="0123456789ABCDEF";
+	uart_putc(HEX[(v>>4)&0xF]);
+	uart_putc(HEX[v&0xF]);
+}
+static void uart_print_hex_array(const uint8_t *buf, uint8_t n){
+	for(uint8_t i=0;i<n;i++){
+		uart_print_hex8(buf[i]);
+		if(i<n-1) uart_putc(':');
+	}
 }
 
-void showUIDLine(uint8_t row, const uint8_t *uid, uint8_t len) {
-  String s = "";
-  for (uint8_t i=0;i<len;i++) {
-    if (i) s += ":";
-    char b[4]; snprintf(b, sizeof(b), "%02X", uid[i]); s += b;
-  }
-  s = s.substring(0,16);
-  lcd.setCursor(0,row);
-  lcd.print("                ");
-  lcd.setCursor(0,row);
-  lcd.print(s);
+/*  SPI  */
+/* SPI HW lento al inicio (fosc/16). Luego podés subir velocidad si todo ok */
+static void spi_init_slow(void){
+	// SS(PB2), MOSI(PB3), SCK(PB5) salidas; MISO(PB4) entrada
+	DDRB |= (1<<PB2)|(1<<PB3)|(1<<PB5);
+	DDRB &= ~(1<<PB4);
+	// Enable SPI, Master, Mode0, fosc/16
+	SPCR = (1<<SPE)|(1<<MSTR)|(0<<CPOL)|(0<<CPHA)|(0<<SPR1)|(1<<SPR0);
+	SPSR = 0;
+	PORTB |= (1<<PB2); // SS alto
+}
+static void spi_set_fast(void){
+	// Opción para subir a fosc/4 o fosc/2 (si el módulo lo tolera)
+	SPCR &= ~((1<<SPR1)|(1<<SPR0)); // fosc/4
+	// SPSR |= (1<<SPI2X);          // descomentar para fosc/2
+}
+static uint8_t spi_txrx(uint8_t d){
+	SPDR = d; while(!(SPSR & (1<<SPIF))); return SPDR;
 }
 
-void signalAccess(bool granted, unsigned long ms=800) {
-  digitalWrite(granted ? PIN_LED_OK : PIN_LED_NO, HIGH);
-  delay(ms);
-  digitalWrite(granted ? PIN_LED_OK : PIN_LED_NO, LOW);
+/* I2C */
+static void i2c_init(void){
+	TWSR = 0x00; // prescaler = 1
+	TWBR = 72;   // ~100 kHz @ 16 MHz
+}
+static uint8_t i2c_start(uint8_t addr_rw){
+	TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
+	TWDR = addr_rw;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
+	return 0;
+}
+static void i2c_write(uint8_t data){
+	TWDR = data;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
+}
+static void i2c_stop(void){
+	TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWSTO);
 }
 
-void eepromWriteByte(int addr, uint8_t v) { EEPROM.update(addr, v); }
-uint8_t eepromReadByte(int addr) { return EEPROM.read(addr); }
+/* LCD I2C */
+/* Cambiar 0x27 por 0x3F si tu backpack usa esa dirección */
+#ifndef LCD_I2C_ADDR
+#define LCD_I2C_ADDR 0x27
+#endif
+// PCF8574: P7..P0 = D7 D6 D5 D4 BL EN RW RS
+#define LCD_BL 0x08
+static uint8_t lcd_bl = LCD_BL;
 
-void formatIfNeeded() {
-  bool ok = true;
-  for (int i=0;i<4;i++) if (eepromReadByte(EEPROM_MAGIC_ADDR+i) != MAGIC[i]) { ok=false; break; }
-  if (!ok) {
-    for (int i=0;i<4;i++) eepromWriteByte(EEPROM_MAGIC_ADDR+i, MAGIC[i]);
-    for (int s=0; s<MAX_SLOTS; s++) {
-      int base = SLOTS_START + s*SLOT_SIZE;
-      eepromWriteByte(base, EMPTY_SIZE);
-      for (int k=1;k<SLOT_SIZE;k++) eepromWriteByte(base+k, 0x00);
-    }
-  }
+static void lcd_i2c_send(uint8_t v){
+	i2c_start((LCD_I2C_ADDR<<1)|0);
+	i2c_write(v | lcd_bl);
+	i2c_stop();
+}
+static void lcd_pulse(uint8_t data){
+	lcd_i2c_send(data | 0x04); // EN=1
+	_delay_us(1);
+	lcd_i2c_send(data & ~0x04); // EN=0
+	_delay_us(50);
+}
+static void lcd_write4(uint8_t nibble, uint8_t rs){
+	uint8_t data = (nibble & 0xF0) | (rs?0x01:0x00);
+	lcd_pulse(data);
+}
+static void lcd_cmd(uint8_t c){
+	lcd_write4(c & 0xF0, 0);
+	lcd_write4((c<<4) & 0xF0, 0);
+}
+static void lcd_data(uint8_t d){
+	lcd_write4(d & 0xF0, 1);
+	lcd_write4((d<<4) & 0xF0, 1);
+}
+static void lcd_init(void){
+	i2c_init();
+	_delay_ms(40);
+	lcd_write4(0x30,0); _delay_ms(5);
+	lcd_write4(0x30,0); _delay_us(150);
+	lcd_write4(0x20,0);
+	lcd_cmd(0x28); // 4-bit, 2 líneas
+	lcd_cmd(0x0C); // display ON, cursor off
+	lcd_cmd(0x06); // entry mode
+	lcd_cmd(0x01); _delay_ms(2);
+}
+static void lcd_clear(void){
+	lcd_cmd(0x01); _delay_ms(2);
+}
+static void lcd_set_cursor(uint8_t col, uint8_t row){
+	static const uint8_t base[] = {0x00,0x40,0x14,0x54};
+	lcd_cmd(0x80 | (base[row] + col));
+}
+static void lcd_print(const char *s){
+	while(*s) lcd_data(*s++);
 }
 
-void readSlot(uint8_t s, uint8_t &len, uint8_t *buf) {
-  int base = SLOTS_START + s*SLOT_SIZE;
-  len = eepromReadByte(base);
-  if (len == EMPTY_SIZE || len > 10) { len = 0; return; }
-  for (uint8_t i=0;i<len;i++) buf[i] = eepromReadByte(base+1+i);
+/*  EEPROM UTIL  */
+#define EE_MAGIC       0xA5
+#define EE_ADDR_MAGIC  0
+#define EE_ADDR_LEN    1
+#define EE_ADDR_UID    2   // hasta 10 bytes
+
+static bool ee_has_card(void){
+	uint8_t m = eeprom_read_byte((uint8_t*)EE_ADDR_MAGIC);
+	uint8_t l = eeprom_read_byte((uint8_t*)EE_ADDR_LEN);
+	return (m==EE_MAGIC && l>0 && l<=10);
+}
+static void ee_clear_card(void){
+	eeprom_write_byte((uint8_t*)EE_ADDR_MAGIC, 0xFF);
+	eeprom_write_byte((uint8_t*)EE_ADDR_LEN,   0x00);
+}
+static void ee_write_card(const uint8_t *uid, uint8_t len){
+	eeprom_write_byte((uint8_t*)EE_ADDR_MAGIC, EE_MAGIC);
+	eeprom_write_byte((uint8_t*)EE_ADDR_LEN,   len);
+	for(uint8_t i=0;i<len;i++)
+	eeprom_write_byte((uint8_t*)(EE_ADDR_UID+i), uid[i]);
+}
+static uint8_t ee_read_card(uint8_t *uid_out){
+	uint8_t len = eeprom_read_byte((uint8_t*)EE_ADDR_LEN);
+	for(uint8_t i=0;i<len;i++)
+	uid_out[i] = eeprom_read_byte((uint8_t*)(EE_ADDR_UID+i));
+	return len;
 }
 
-void writeSlot(uint8_t s, uint8_t len, const uint8_t *buf) {
-  int base = SLOTS_START + s*SLOT_SIZE;
-  if (len==0 || len>10) {
-    eepromWriteByte(base, EMPTY_SIZE);
-    for (int i=1;i<SLOT_SIZE;i++) eepromWriteByte(base+i, 0x00);
-    return;
-  }
-  eepromWriteByte(base, len);
-  for (uint8_t i=0;i<len;i++) eepromWriteByte(base+1+i, buf[i]);
-  for (int i=1+len;i<SLOT_SIZE;i++) eepromWriteByte(base+i, 0x00);
+/*  MFRC522 MINI-LIB */
+/* Pines RC522 */
+#define RC522_SS_PORT  PORTB
+#define RC522_SS_DDR   DDRB
+#define RC522_SS_PIN   PB2   // D10
+#define RC522_RST_PORT PORTB
+#define RC522_RST_DDR  DDRB
+#define RC522_RST_PIN  PB1   // D9
+
+#define SS_LOW()   (RC522_SS_PORT &= ~(1<<RC522_SS_PIN))
+#define SS_HIGH()  (RC522_SS_PORT |=  (1<<RC522_SS_PIN))
+
+/* Registros (subset esencial) */
+#define CommandReg     0x01
+#define CommIrqReg     0x04
+#define ErrorReg       0x06
+#define FIFODataReg    0x09
+#define FIFOLevelReg   0x0A
+#define BitFramingReg  0x0D
+#define ModeReg        0x11
+#define TxControlReg   0x14
+#define TxASKReg       0x15
+#define CRCResultRegH  0x21
+#define CRCResultRegL  0x22
+#define TModeReg       0x2A
+#define TPrescalerReg  0x2B
+#define TReloadRegH    0x2C
+#define TReloadRegL    0x2D
+#define VersionReg     0x37
+
+/* Comandos */
+#define PCD_IDLE       0x00
+#define PCD_TRANSCEIVE 0x0C
+#define PCD_SOFTRESET  0x0F
+
+/* PICC (Type A) */
+#define PICC_REQIDL    0x26
+#define PICC_ANTICOLL  0x93
+#define PICC_HALT      0x50
+
+/* Primitivas de bajo nivel */
+static uint8_t rd(uint8_t reg){
+	uint8_t addr = ((reg<<1)&0x7E) | 0x80;
+	SS_LOW(); uint8_t _=spi_txrx(addr); (void)_;
+	uint8_t v = spi_txrx(0x00);
+	SS_HIGH(); return v;
+}
+static void wr(uint8_t reg, uint8_t val){
+	uint8_t addr = ((reg<<1)&0x7E);
+	SS_LOW(); (void)spi_txrx(addr); (void)spi_txrx(val);
+	SS_HIGH();
+}
+static void set_bits(uint8_t reg, uint8_t m){ wr(reg, rd(reg)|m); }
+static void clr_bits(uint8_t reg, uint8_t m){ wr(reg, rd(reg)&(~m)); }
+
+/* Init HW pins y chip */
+static void mfrc522_hw_init(void){
+	RC522_RST_DDR |= (1<<RC522_RST_PIN);
+	RC522_SS_DDR  |= (1<<RC522_SS_PIN);
+	RC522_RST_PORT &= ~(1<<RC522_RST_PIN);
+	_delay_ms(5);
+	RC522_RST_PORT |=  (1<<RC522_RST_PIN);
+	_delay_ms(50);
+	SS_HIGH();
 }
 
-int findUID(const uint8_t *uid, uint8_t len) {
-  for (uint8_t s=0; s<MAX_SLOTS; s++) {
-    uint8_t slen; uint8_t sbuf[10];
-    readSlot(s, slen, sbuf);
-    if (slen == len && slen>0) {
-      bool eq=true;
-      for (uint8_t i=0;i<len;i++) if (sbuf[i]!=uid[i]) { eq=false; break; }
-      if (eq) return s;
-    }
-  }
-  return -1;
+/*  API pública mini-librería */
+static void mfrc522_init(void){
+	spi_init_slow();
+	mfrc522_hw_init();
+
+	wr(CommandReg, PCD_SOFTRESET);
+	_delay_ms(50);
+
+	// Temporización/modulación (ISO14443A, 106 kbps)
+	wr(TModeReg,      0x8D);
+	wr(TPrescalerReg, 0x3E);
+	wr(TReloadRegL,   30);
+	wr(TReloadRegH,   0);
+	wr(TxASKReg,      0x40); // 100% ASK
+	wr(ModeReg,       0x3D); // CRC preset 0x6363, MSB first
+
+	// Antena ON
+	uint8_t v = rd(TxControlReg);
+	if(!(v & 0x03)) wr(TxControlReg, v|0x03);
+
+	// Si todo OK, se puede subir velocidad SPI
+	// spi_set_fast();
+}
+static uint8_t mfrc522_version(void){ return rd(VersionReg); }
+
+/* REQA: retorna true si hay tarjeta presente */
+static bool mfrc522_requestA(void){
+	wr(CommandReg,   PCD_IDLE);
+	wr(FIFOLevelReg, 0x80);      // Flush FIFO
+	wr(CommIrqReg,   0x7F);      // Limpiar IRQs
+	wr(BitFramingReg,0x07);      // 7 bits
+	wr(FIFODataReg,  PICC_REQIDL);
+	wr(CommandReg,   PCD_TRANSCEIVE);
+	set_bits(BitFramingReg, 0x80); // StartSend
+
+	uint16_t t=3000; uint8_t irq;
+	do{ irq = rd(CommIrqReg); t--; }while(!(irq & 0x30) && t); // RxIRq/IdleIRq
+	clr_bits(BitFramingReg, 0x80);
+	return (t!=0);
 }
 
-bool addUID(const uint8_t *uid, uint8_t len) {
-  if (findUID(uid, len) >= 0) return false;
-  for (uint8_t s=0; s<MAX_SLOTS; s++) {
-    uint8_t slen; uint8_t sbuf[10];
-    readSlot(s, slen, sbuf);
-    if (slen == 0) { writeSlot(s, len, uid); return true; }
-  }
-  return false;
+/* Anticolisión nivel 1: UID de 4 bytes */
+static bool mfrc522_anticoll(uint8_t *uid, uint8_t *uid_len){
+	wr(CommandReg,   PCD_IDLE);
+	wr(FIFOLevelReg, 0x80);
+	wr(CommIrqReg,   0x7F);
+	wr(BitFramingReg,0x00);      // 8 bits
+	wr(FIFODataReg,  PICC_ANTICOLL);
+	wr(FIFODataReg,  0x20);
+	wr(CommandReg,   PCD_TRANSCEIVE);
+	set_bits(BitFramingReg, 0x80);
+
+	uint16_t t=3000; uint8_t irq;
+	do{ irq = rd(CommIrqReg); t--; }while(!(irq & 0x30) && t);
+	clr_bits(BitFramingReg, 0x80);
+	if(t==0) return false;
+
+	uint8_t n = rd(FIFOLevelReg);
+	if(n < 5) return false;
+
+	for(uint8_t i=0;i<4;i++) uid[i] = rd(FIFODataReg);
+	(void)rd(FIFODataReg); // BCC descartado
+	*uid_len = 4;
+	return true;
 }
 
-bool removeUID(const uint8_t *uid, uint8_t len) {
-  int idx = findUID(uid, len);
-  if (idx < 0) return false;
-  writeSlot(idx, 0, nullptr);
-  return true;
+/* HALT */
+static void mfrc522_halt(void){
+	wr(CommandReg,   PCD_IDLE);
+	wr(FIFOLevelReg, 0x80);
+	wr(CommIrqReg,   0x7F);
+	wr(FIFODataReg,  PICC_HALT);
+	wr(FIFODataReg,  0x00);
+	wr(CommandReg,   PCD_TRANSCEIVE);
+	set_bits(BitFramingReg, 0x80);
+	_delay_ms(1);
+	clr_bits(BitFramingReg, 0x80);
 }
 
-void clearAll() { for (uint8_t s=0;s<MAX_SLOTS;s++) writeSlot(s, 0, nullptr); }
-bool isAuthorized(const uint8_t *uid, uint8_t len) { return findUID(uid, len) >= 0; }
-
-bool btnUpdate(Btn &b, bool &fallingEdge, bool &longPress2s) {
-  bool rawHigh = digitalRead(b.pin);
-  unsigned long now = millis();
-  if (rawHigh != b.lastReadHigh) { b.lastReadHigh = rawHigh; b.lastChangeMs = now; }
-  fallingEdge = false; longPress2s = false;
-
-  if ((now - b.lastChangeMs) > b.debounceMs) {
-    if (b.lastStableHigh != b.lastReadHigh) {
-      b.lastStableHigh = b.lastReadHigh;
-      if (!b.lastStableHigh) { b.pressedEdge = true; b.pressedAtMs = now; fallingEdge = true; }
-      else {
-        if (b.pressedEdge && (now - b.pressedAtMs) >= 2000) longPress2s = true;
-        b.pressedEdge = false;
-      }
-    }
-  }
-  return !b.lastStableHigh;
+/* Debug rápido */
+static void rc522_debug_info(void){
+	uint8_t ver = mfrc522_version();
+	uart_print("RC522 VersionReg=0x"); uart_print_hex8(ver); uart_print("\r\n");
+	uint8_t tc = rd(TxControlReg);
+	uart_print("TxControlReg=0x"); uart_print_hex8(tc); uart_print(" (antenna ");
+	uart_print((tc & 0x03) ? "ON" : "OFF"); uart_print(")\r\n");
 }
 
-void printShortStatus(const char *l1, const char *l2, unsigned long ms=1200) {
-  lcd.clear(); lcdCenterLine(0, l1); lcdCenterLine(1, l2); delay(ms);
+/*  APLICACIÓN  */
+#define LED_VERDE_PIN  PD6
+#define LED_ROJO_PIN   PD7
+#define RELE_PIN       PD5   // opcional
+
+#define BTN_ACT_PIN    PD2   // actualizar/registrar
+#define BTN_DEL_PIN    PD3   // borrar
+
+static void gpio_init(void){
+	// LEDs + RELÉ salidas
+	DDRD |= (1<<LED_VERDE_PIN)|(1<<LED_ROJO_PIN)|(1<<RELE_PIN);
+	PORTD &= ~((1<<LED_VERDE_PIN)|(1<<LED_ROJO_PIN)|(1<<RELE_PIN));
+	// Botones con pull-up
+	DDRD &= ~((1<<BTN_ACT_PIN)|(1<<BTN_DEL_PIN));
+	PORTD |=  (1<<BTN_ACT_PIN)|(1<<BTN_DEL_PIN);
 }
 
-// ----------------- Setup -----------------
-void setup() {
-  pinMode(PIN_LED_OK, OUTPUT);
-  pinMode(PIN_LED_NO, OUTPUT);
-  digitalWrite(PIN_LED_OK, LOW);
-  digitalWrite(PIN_LED_NO, LOW);
-
-  pinMode(PIN_BTN_ADD, INPUT_PULLUP);
-  pinMode(PIN_BTN_DEL, INPUT_PULLUP);
-
-  Serial.begin(115200);
-
-  Wire.begin();
-  Wire.setClock(100000);
-
-  // hd44780: inicializa y autodetecta backpack I2C (PCF8574). 
-  // Si devuelve status!=0 igual suele funcionar.
-  (void)lcd.begin(16, 2);
-  lcd.clear();
-  lcdCenterLine(0, "Control RFID");
-  lcdCenterLine(1, "Inicializando...");
-
-  SPI.begin();
-  rfid.PCD_Init();
-
-  formatIfNeeded();
-
-  delay(600);
-  lcd.clear();
-  lcdCenterLine(0, "Aproxime tarjeta");
-  lcdCenterLine(1, "o pulse un boton");
+static bool btn_pressed(uint8_t pin){
+	if(!(PIND & (1<<pin))){
+		_delay_ms(20);
+		if(!(PIND & (1<<pin))){
+			while(!(PIND & (1<<pin))); // esperar soltar
+			_delay_ms(10);
+			return true;
+		}
+	}
+	return false;
+}
+static bool uid_equals(const uint8_t *a, const uint8_t *b, uint8_t len){
+	for(uint8_t i=0;i<len;i++) if(a[i]!=b[i]) return false;
+	return true;
+}
+static void acceso_ok(void){
+	PORTD |=  (1<<LED_VERDE_PIN);
+	PORTD &= ~(1<<LED_ROJO_PIN);
+	PORTD |=  (1<<RELE_PIN);      // abrir
+	_delay_ms(800);
+	PORTD &= ~(1<<RELE_PIN);
+	PORTD &= ~(1<<LED_VERDE_PIN);
+}
+static void acceso_denegado(void){
+	for(uint8_t i=0;i<3;i++){
+		PORTD |=  (1<<LED_ROJO_PIN);
+		_delay_ms(150);
+		PORTD &= ~(1<<LED_ROJO_PIN);
+		_delay_ms(120);
+	}
 }
 
-//  Loop
-void loop() {
-  bool edgeAdd=false, longAdd=false;
-  bool edgeDel=false, longDel=false;
+int main(void){
+	// UART 9600
+	#define BAUD 9600
+	#define MY_UBRR (F_CPU/16/BAUD-1)
+	uart_init(MY_UBRR);
 
-  btnUpdate(btnAdd, edgeAdd, longAdd);
-  btnUpdate(btnDel, edgeDel, longDel);
+	gpio_init();
+	lcd_init();
+	mfrc522_init();
 
-  if (edgeAdd) {
-    if (lastUIDValid) {
-      if (addUID(lastUID, lastUIDLen)) printShortStatus("Tarjeta agregada","OK");
-      else if (isAuthorized(lastUID,lastUIDLen)) printShortStatus("Ya estaba","autorizada");
-      else printShortStatus("Sin espacio","en memoria");
-    } else printShortStatus("No hay UID","Lea una tarjeta");
-  }
+	// DEBUG: versión y antena
+	rc522_debug_info();
 
-  static bool delWasPressed = false;
-  bool delPressedNow = (digitalRead(PIN_BTN_DEL) == LOW);
-  if (delWasPressed && !delPressedNow) {
-    unsigned long now = millis();
-    if ((now - btnDel.pressedAtMs) >= 2000) longDel = true;
-  }
-  delWasPressed = delPressedNow;
+	lcd_clear();
+	lcd_print("Bienvenido RFID");
+	lcd_set_cursor(0,1); lcd_print("Acerque tarjeta");
+	uart_print("\r\n== Sistema RFID iniciado ==\r\n");
 
-  if (longDel) { clearAll(); printShortStatus("Memoria","BORRADA"); }
-  else if (edgeDel) {
-    if (lastUIDValid) {
-      if (removeUID(lastUID,lastUIDLen)) printShortStatus("Tarjeta","ELIMINADA");
-      else printShortStatus("Tarjeta no","autorizada");
-    } else printShortStatus("No hay UID","Lea una tarjeta");
-  }
+	uint8_t uid[10], uid_len=0;
+	uint8_t mem_uid[10]; uint8_t mem_len = 0;
 
-  if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
-    lastUIDLen = rfid.uid.size; if (lastUIDLen > 10) lastUIDLen = 10;
-    for (uint8_t i=0;i<lastUIDLen;i++) lastUID[i] = rfid.uid.uidByte[i];
-    lastUIDValid = true;
+	if(ee_has_card()){
+		mem_len = ee_read_card(mem_uid);
+		uart_print("Tarjeta registrada: ");
+		uart_print_hex_array(mem_uid, mem_len);
+		uart_print("\r\n");
+		} else {
+		uart_print("Sin tarjeta registrada.\r\n");
+	}
 
-    lcd.clear(); lcdCenterLine(0, "UID detectada"); showUIDLine(1, lastUID, lastUIDLen);
-    bool ok = isAuthorized(lastUID, lastUIDLen); delay(500);
+	while(1){
+		// Borrar tarjeta
+		if(btn_pressed(BTN_DEL_PIN)){
+			ee_clear_card();
+			mem_len = 0;
+			lcd_clear();
+			lcd_print("Tarjeta borrada");
+			lcd_set_cursor(0,1); lcd_print("Registre nueva");
+			uart_print("Tarjeta borrada.\r\n");
+			_delay_ms(900);
+			lcd_clear(); lcd_print("Acerque tarjeta");
+		}
 
-    lcd.clear();
-    if (ok) { lcdCenterLine(0,"ACCESO"); lcdCenterLine(1,"AUTORIZADO"); signalAccess(true,800); }
-    else    { lcdCenterLine(0,"ACCESO"); lcdCenterLine(1,"DENEGADO");   signalAccess(false,800); }
+		// Registrar/Actualizar tarjeta
+		if(btn_pressed(BTN_ACT_PIN)){
+			lcd_clear(); lcd_print("Modo registro");
+			lcd_set_cursor(0,1); lcd_print("Acerque tarjeta");
+			uart_print("Modo registro: acerque tarjeta...\r\n");
 
-    digitalWrite(PIN_LED_OK, LOW); digitalWrite(PIN_LED_NO, LOW);
-    delay(200);
-    lcd.clear();
-    lcdCenterLine(0, "Aproxime tarjeta");
-    lcdCenterLine(1, "o pulse un boton");
+			bool ok=false;
+			for(uint16_t to=4000; to>0; --to){
+				if(mfrc522_requestA() && mfrc522_anticoll(uid, &uid_len) && uid_len>=4){
+					ee_write_card(uid, uid_len);
+					memcpy(mem_uid, uid, uid_len); mem_len = uid_len;
+					lcd_clear(); lcd_print("Nueva tarjeta");
+					lcd_set_cursor(0,1); lcd_print("registrada");
+					uart_print("Nueva tarjeta: ");
+					uart_print_hex_array(uid, uid_len); uart_print("\r\n");
+					mfrc522_halt();
+					ok=true; break;
+				}
+				_delay_ms(1);
+			}
+			if(!ok){
+				lcd_clear(); lcd_print("No detectada");
+				uart_print("Tiempo de registro agotado.\r\n");
+			}
+			_delay_ms(900);
+			lcd_clear(); lcd_print("Acerque tarjeta");
+		}
 
-    rfid.PICC_HaltA();
-    rfid.PCD_StopCrypto1();
-  }
-
-  delay(5);
+		// Verificación normal
+		if(mfrc522_requestA() && mfrc522_anticoll(uid, &uid_len) && uid_len>=4){
+			uart_print("UID leido: "); uart_print_hex_array(uid, uid_len); uart_print("\r\n");
+			if(mem_len>0 && uid_equals(uid, mem_uid, mem_len)){
+				lcd_clear(); lcd_print("Acceso permitido");
+				acceso_ok();
+				lcd_clear(); lcd_print("Acerque tarjeta");
+				} else {
+				lcd_clear(); lcd_print("Acceso denegado");
+				acceso_denegado();
+				lcd_clear(); lcd_print("Acerque tarjeta");
+			}
+			mfrc522_halt();
+			_delay_ms(300);
+		}
+	}
 }
