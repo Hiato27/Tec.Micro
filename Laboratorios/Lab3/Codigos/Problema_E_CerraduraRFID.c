@@ -9,13 +9,13 @@
 #include <string.h>
 #include <stdint.h>
 
-/* Nuestras libs */
+/* LIBRERIAS DE MOODLE */
 #include "scr/SPI.h"
 #include "scr/UART.h"
 #include "scr/RC522.h"
 
-/*  I2C + LCD 16x2 (PCF8574)  */
-#define LCD_ADDR 0x27     // Cambia a 0x3F si tu backpack lo usa
+/*  I2C + LCD 16x2   */
+#define LCD_ADDR 0x27     // Cambia a 0x3F 
 #define LCD_BL   0x08
 
 static void i2c_init(void){
@@ -83,7 +83,7 @@ static void lcd_set(uint8_t col, uint8_t row){
 }
 static void lcd_print(const char *s){ while(*s) lcd_data(*s++); }
 
-/*  EEPROM (tarjeta almacenada) */
+/*  EEPROM (ALMACENAMIENTO DE LA TARJETA) */
 #define EE_MAGIC        0xA5
 #define EE_ADDR_MAGIC   0
 #define EE_ADDR_LEN     1
