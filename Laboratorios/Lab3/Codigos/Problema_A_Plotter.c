@@ -2,21 +2,82 @@
 #include <avr/io.h>
 #include <stdint.h>
 #include <util/delay.h>
+#include <stdbool.h>
 
-/* Pines (PORTD)
-   PD2, PD3: (acá: PD2 = abajo, PD3 = arriba)
-   PD4: X+
-   PD5: Y-
-   PD6: X-
-   PD7: Y+
+/* PORTD:
+   PD2= abajo, PD3= arriba,
+   PD4=X+, PD5=Y-, PD6=X-, PD7=Y+
 */
 #define PD_X_POS  PD4
 #define PD_Y_NEG  PD5
 #define PD_X_NEG  PD6
 #define PD_Y_POS  PD7
 
-#define DELAY_TRI_SEG   16u
-#define DELAY_CRUZ_SEG  14u
+static inline void io_init(void){
+    DDRD  = (1u<<PD2)|(1u<<PD3)|(1u<<PD4)|(1u<<PD5)|(1u<<PD6)|(1u<<PD7);
+    PORTD = 0x00;
+}
+
+static inline void fig_pen_down(void){ PORTD = (1u<<PD2); _delay_ms(1); PORTD=0; }
+static inline void fig_pen_up(void){   PORTD = (1u<<PD3); _delay_ms(1); PORTD=0; }
+
+static inline void fig_move_x_pos_ms(uint16_t ms){ PORTD=(1u<<PD_X_POS); while(ms--) _delay_ms(1); PORTD=0; }
+static inline void fig_move_x_neg_ms(uint16_t ms){ PORTD=(1u<<PD_X_NEG); while(ms--) _delay_ms(1); PORTD=0; }
+static inline void fig_move_y_pos_ms(uint16_t ms){ PORTD=(1u<<PD_Y_POS); while(ms--) _delay_ms(1); PORTD=0; }
+static inline void fig_move_y_neg_ms(uint16_t ms){ PORTD=(1u<<PD_Y_NEG); while(ms--) _delay_ms(1); PORTD=0; }
+
+static inline void fig_move_diag_ms(uint8_t mask, uint16_t ms){
+    uint16_t half = ms/2;
+    if(mask & (1u<<PD_X_POS)) fig_move_x_pos_ms(half);
+    if(mask & (1u<<PD_X_NEG)) fig_move_x_neg_ms(half);
+    if(mask & (1u<<PD_Y_POS)) fig_move_y_pos_ms(half);
+    if(mask & (1u<<PD_Y_NEG)) fig_move_y_neg_ms(half);
+}
+
+static inline void out_delay(uint8_t mask, void (*delay_fn)(void)){
+    if(delay_fn==NULL) return;
+    extern void delay_1s(void);    extern void delay_2s(void);
+    extern void delay_3s(void);    extern void delay_10s(void);
+    extern void delay_25s(void);   extern void delay_tri(void);
+    extern void delay_cruz(void);
+    uint32_t ms=0;
+    if(delay_fn==delay_1s) ms=1000;
+    else if(delay_fn==delay_2s) ms=2000;
+    else if(delay_fn==delay_3s) ms=3000;
+    else if(delay_fn==delay_10s) ms=10000;
+    else if(delay_fn==delay_25s) ms=25000;
+    else if(delay_fn==delay_tri)  ms=16u*1000u; 
+    else if(delay_fn==delay_cruz) ms=14u*1000u; 
+
+    if(mask & (1u<<PD2)){ fig_pen_down(); }
+    if(mask & (1u<<PD3)){ fig_pen_up(); }
+
+    if(mask == (1u<<PD_X_POS))      fig_move_x_pos_ms(ms);
+    else if(mask == (1u<<PD_X_NEG)) fig_move_x_neg_ms(ms);
+    else if(mask == (1u<<PD_Y_POS)) fig_move_y_pos_ms(ms);
+    else if(mask == (1u<<PD_Y_NEG)) fig_move_y_neg_ms(ms);
+    else if(mask == ((1u<<PD_X_POS)|(1u<<PD_Y_POS)) ||
+            mask == ((1u<<PD_X_POS)|(1u<<PD_Y_NEG)) ||
+            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_POS)) ||
+            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_NEG))){
+        fig_move_diag_ms(mask, (uint16_t)ms);
+    } else {
+    }
+}
+static inline void out_delay_ms(uint8_t mask, uint16_t ms){
+    if(mask & (1u<<PD2)){ fig_pen_down(); }
+    if(mask & (1u<<PD3)){ fig_pen_up(); }
+    if(mask == (1u<<PD_X_POS))      fig_move_x_pos_ms(ms);
+    else if(mask == (1u<<PD_X_NEG)) fig_move_x_neg_ms(ms);
+    else if(mask == (1u<<PD_Y_POS)) fig_move_y_pos_ms(ms);
+    else if(mask == (1u<<PD_Y_NEG)) fig_move_y_neg_ms(ms);
+    else if(mask == ((1u<<PD_X_POS)|(1u<<PD_Y_POS)) ||
+            mask == ((1u<<PD_X_POS)|(1u<<PD_Y_NEG)) ||
+            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_POS)) ||
+            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_NEG))) {
+        fig_move_diag_ms(mask, ms);
+    } else { }
+}
 
 static void delay_1s(void){
     for (uint8_t i = 0; i < 4; i++){
@@ -31,45 +92,31 @@ static void delay_25s(void) { for (uint8_t n = 0; n < 8; n++) delay_1s(); }
 static void delay_2s(void)  { delay_1s(); delay_1s(); }
 static void delay_3s(void)  { delay_1s(); delay_1s(); delay_1s(); }
 static void delay_10s(void) { for (uint8_t n=0;n<10;n++) delay_1s(); }
+static void delay_tri(void) { for (uint8_t n=0; n<16u; n++) delay_1s(); }
+static void delay_cruz(void){ for (uint8_t n=0; n<14u; n++) delay_1s(); }
 
-static void delay_tri(void)  { for (uint8_t n = 0; n < DELAY_TRI_SEG;  n++) delay_1s(); }
-static void delay_cruz(void) { for (uint8_t n = 0; n < DELAY_CRUZ_SEG; n++) delay_1s(); }
-
-static inline void out_delay(uint8_t mask, void (*delay_fn)(void)) {
-    PORTD = mask;
-    delay_fn();
-}
-static inline void out_delay_ms(uint8_t mask, uint16_t ms) {
-    PORTD = mask;
-    while (ms--) _delay_ms(1);
-}
-
-/* Figuras */
+/*Figuras*/
 static void run_sequence(void);   /* Triangulo */
 static void run_sequence2(void);  /* Cruz */
 static void run_sequence3(void);  /* Circulo */
 static void run_conejo(void);     /* Conejo */
 static void run_murcielago(void); /* Murcielago */
 
+/*Todas las figuras*/
 int main(void){
-    /* PD2..PD7 salida, LOW */
-    DDRD  = (1u<<PD2)|(1u<<PD3)|(1u<<PD4)|(1u<<PD5)|(1u<<PD6)|(1u<<PD7);
-    PORTD = 0x00;
-
-    /*ejecuta TODAS las figuras*/
-    run_sequence();     /* Triángulo */
-    run_sequence3();    /* Círculo */
-    run_sequence2();    /* Cruz */
-    run_conejo();       /* Conejo */
-    run_murcielago();   /* Murciélago */
-
-    PORTD = 0x00;
+    io_init();
+    run_sequence();
+    run_sequence3();
+    run_sequence2();
+    run_conejo();
+    run_murcielago();
+    PORTD=0;
     for(;;){}
     return 0;
 }
 
 /*TRIANGULO*/
-static void run_sequence(void) {
+static void run_sequence(void){
     out_delay((1u<<PD_X_POS), delay_tri);
     out_delay((1u<<PD_X_POS), delay_tri);
     out_delay((1u<<PD_X_POS), delay_tri);
@@ -81,7 +128,7 @@ static void run_sequence(void) {
     out_delay((1u<<PD_Y_POS), delay_tri);
     out_delay((1u<<PD_Y_POS), delay_10s);
 
-    out_delay((1u<<PD2),      delay_1s);  
+    out_delay((1u<<PD2),      delay_1s);
 
     out_delay((1u<<PD_X_POS), delay_tri);
     out_delay((1u<<PD_Y_POS), delay_tri);
@@ -89,15 +136,14 @@ static void run_sequence(void) {
     out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_tri);
 
     out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD3),      delay_1s);  
+    out_delay((1u<<PD3),      delay_1s);
 
     out_delay_ms((1u<<PD_X_NEG), 5000);
     out_delay_ms((1u<<PD_Y_NEG), 15000);
-    PORTD = 0x00;
 }
 
 /*CRUZ*/
-static void run_sequence2(void) {
+static void run_sequence2(void){
     out_delay((1u<<PD_X_POS), delay_3s);
     out_delay((1u<<PD_X_POS), delay_3s);
     out_delay((1u<<PD_X_POS), delay_3s);
@@ -111,25 +157,24 @@ static void run_sequence2(void) {
     out_delay((1u<<PD_X_POS), delay_cruz);
     out_delay((1u<<PD_X_POS), delay_cruz);
 
-    out_delay((1u<<PD2),      delay_1s); 
+    out_delay((1u<<PD2),      delay_1s);
 
     out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_cruz);
 
-    out_delay((1u<<PD3),      delay_1s); 
+    out_delay((1u<<PD3),      delay_1s);
     out_delay((1u<<PD_X_POS), delay_cruz);
-    out_delay((1u<<PD2),      delay_1s); 
+    out_delay((1u<<PD2),      delay_1s);
 
-    out_delay((1u<<PD_Y_POS)|(1u<<PD_Y_NEG), delay_cruz); 
+    out_delay((1u<<PD_Y_POS)|(1u<<PD_Y_NEG), delay_cruz);
 
-    out_delay((1u<<PD3),      delay_1s); 
+    out_delay((1u<<PD3),      delay_1s);
 
     out_delay_ms((1u<<PD_X_NEG), 15000);
     out_delay_ms((1u<<PD_Y_NEG), 15000);
-    PORTD = 0x00;
 }
 
 /*CIRCULO*/
-static void run_sequence3(void) {
+static void run_sequence3(void){
     out_delay((1u<<PD_Y_POS), delay_25s);
     out_delay((1u<<PD_Y_POS), delay_25s);
     out_delay((1u<<PD_Y_POS), delay_25s);
@@ -234,13 +279,14 @@ static void run_sequence3(void) {
 
     out_delay_ms((1u<<PD_X_NEG), 7000);
     out_delay_ms((1u<<PD_Y_NEG), 5000);
-    PORTD = 0x00;
 }
 
 /*CONEJO*/
-static void run_conejo(void) {
+static void run_conejo(void){
     out_delay_ms((1u<<PD_X_POS), 10000);
+
     out_delay_ms((1u<<PD2), 100);
+
     out_delay_ms((1u<<PD_X_NEG), 1500);
     out_delay_ms((1u<<PD_Y_NEG), 1500);
     out_delay_ms((1u<<PD_Y_POS), 750);
@@ -329,18 +375,9 @@ static void run_conejo(void) {
 
     out_delay_ms((1u<<PD_X_NEG), 800);
 
-    for (int i = 0; i < 8; i++) {
-        out_delay_ms((1u<<PD_X_POS), 50);
-        out_delay_ms((1u<<PD_Y_POS), 50);
-    }
-    for (int i = 0; i < 8; i++) {
-        out_delay_ms((1u<<PD_Y_NEG), 50);
-        out_delay_ms((1u<<PD_Y_POS), 50);
-    }
-    for (int i = 0; i < 8; i++) {
-        out_delay_ms((1u<<PD_X_POS), 50);
-        out_delay_ms((1u<<PD_X_NEG), 50);
-    }
+    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_POS), 50); out_delay_ms((1u<<PD_Y_POS), 50); }
+    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_NEG), 50); out_delay_ms((1u<<PD_Y_POS), 50); }
+    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_POS), 50); out_delay_ms((1u<<PD_X_NEG), 50); }
 
     out_delay_ms((1u<<PD_X_POS), 750);
     out_delay_ms((1u<<PD_X_NEG), 750);
@@ -383,34 +420,25 @@ static void run_conejo(void) {
     out_delay_ms((1u<<PD_X_NEG), 1950);
 
     out_delay_ms((1u<<PD2), 100); // baja
-
     out_delay_ms((1u<<PD_X_NEG), 750); // dibuja
-
     out_delay_ms((1u<<PD3), 100); // sube
 
     out_delay_ms((1u<<PD_X_POS), 375); // posicion
 
     out_delay_ms((1u<<PD2), 100);
-
     out_delay_ms((1u<<PD_Y_POS), 600);
-
     out_delay_ms((1u<<PD3), 100);
 
-    out_delay_ms((1u<<PD_X_POS), 400); // posicion
-
+    out_delay_ms((1u<<PD_X_POS), 400); //posicion
     out_delay_ms((1u<<PD2), 100);
-
     out_delay_ms((1u<<PD_X_NEG), 600);
-
     out_delay_ms((1u<<PD3), 100);
 
     out_delay_ms((1u<<PD_Y_NEG), 6500);
-
-    PORTD = 0x00;
 }
 
 /*MURCIELAGO*/
-static void run_murcielago(void) {
+static void run_murcielago(void){
     out_delay_ms((1u<<PD_X_POS), 2000);
     out_delay_ms((1u<<PD_Y_POS), 16000);
 
@@ -444,7 +472,7 @@ static void run_murcielago(void) {
     out_delay_ms((1u<<PD_Y_NEG), 500);
     out_delay_ms((1u<<PD_X_NEG), 150);
 
-    out_delay_ms((1u<<PD3), 100);  /* pluma arriba */
+    out_delay_ms((1u<<PD3), 100);
 
     /* ojos */
     out_delay_ms((1u<<PD_X_POS), 500);
@@ -484,5 +512,5 @@ static void run_murcielago(void) {
 
     out_delay_ms((1u<<PD_Y_NEG), 12000);
     out_delay_ms((1u<<PD_X_NEG), 18000);
-    PORTD = 0x00;
+    PORTD=0;
 }
