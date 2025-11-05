@@ -1,516 +1,524 @@
-#define F_CPU 16000000UL
+// Frecuencia del cristal (1MHz)
+#define F_CPU 1000000UL
+
 #include <avr/io.h>
-#include <stdint.h>
+#include <util/delay_basic.h>
 #include <util/delay.h>
-#include <stdbool.h>
 
-/* PORTD:
-   PD2= abajo, PD3= arriba,
-   PD4=X+, PD5=Y-, PD6=X-, PD7=Y+
-*/
-#define PD_X_POS  PD4
-#define PD_Y_NEG  PD5
-#define PD_X_NEG  PD6
-#define PD_Y_POS  PD7
+// --- Pines Eje X (Puerto B) ---
+#define PIN_PASO_X   PB3
+#define PIN_DIR_X    PB4
+#define PIN_HAB_X    PB5
 
-static inline void io_init(void){
-    DDRD  = (1u<<PD2)|(1u<<PD3)|(1u<<PD4)|(1u<<PD5)|(1u<<PD6)|(1u<<PD7);
-    PORTD = 0x00;
+// --- Pines Eje Y (Puerto C) ---
+#define PIN_PASO_Y   PC3
+#define PIN_DIR_Y    PC4
+#define PIN_HAB_Y    PC5
+
+// --- Pin de la Pluma (Puerto C) ---
+#define PIN_PLUMA    PC0
+
+// --- ¡¡AJUSTA ESTE VALOR!! ---
+// Define cuántos pasos debe dar el motor por cada 1000ms (1 segundo)
+// del código original. Prueba subiendo o bajando este número.
+#define PASOS_POR_SEGUNDO 100.0
+
+// Función de conversión
+// (Calcula los pasos basado en los milisegundos del código original)
+#define CALCULAR_PASOS(ms) (uint16_t)((ms / 1000.0) * PASOS_POR_SEGUNDO)
+
+// Retardo corto
+static inline void pausa_corta(uint16_t ciclos) {
+    _delay_loop_2(ciclos);
 }
 
-static inline void fig_pen_down(void){ PORTD = (1u<<PD2); _delay_ms(1); PORTD=0; }
-static inline void fig_pen_up(void){   PORTD = (1u<<PD3); _delay_ms(1); PORTD=0; }
+// Configuración inicial de los puertos y pines
+void inicializar_hardware(void) {
+    DDRB |= (1 << PIN_PASO_X) | (1 << PIN_DIR_X) | (1 << PIN_HAB_X);
+    DDRC |= (1 << PIN_PASO_Y) | (1 << PIN_DIR_Y) | (1 << PIN_HAB_Y) | (1 << PIN_PLUMA);
 
-static inline void fig_move_x_pos_ms(uint16_t ms){ PORTD=(1u<<PD_X_POS); while(ms--) _delay_ms(1); PORTD=0; }
-static inline void fig_move_x_neg_ms(uint16_t ms){ PORTD=(1u<<PD_X_NEG); while(ms--) _delay_ms(1); PORTD=0; }
-static inline void fig_move_y_pos_ms(uint16_t ms){ PORTD=(1u<<PD_Y_POS); while(ms--) _delay_ms(1); PORTD=0; }
-static inline void fig_move_y_neg_ms(uint16_t ms){ PORTD=(1u<<PD_Y_NEG); while(ms--) _delay_ms(1); PORTD=0; }
-
-static inline void fig_move_diag_ms(uint8_t mask, uint16_t ms){
-    uint16_t half = ms/2;
-    if(mask & (1u<<PD_X_POS)) fig_move_x_pos_ms(half);
-    if(mask & (1u<<PD_X_NEG)) fig_move_x_neg_ms(half);
-    if(mask & (1u<<PD_Y_POS)) fig_move_y_pos_ms(half);
-    if(mask & (1u<<PD_Y_NEG)) fig_move_y_neg_ms(half);
+    PORTB |= (1 << PIN_HAB_X);
+    PORTC |= (1 << PIN_HAB_Y);
+    PORTC |= (1 << PIN_PLUMA); // Pluma arriba por defecto
 }
 
-static inline void out_delay(uint8_t mask, void (*delay_fn)(void)){
-    if(delay_fn==NULL) return;
-    extern void delay_1s(void);    extern void delay_2s(void);
-    extern void delay_3s(void);    extern void delay_10s(void);
-    extern void delay_25s(void);   extern void delay_tri(void);
-    extern void delay_cruz(void);
-    uint32_t ms=0;
-    if(delay_fn==delay_1s) ms=1000;
-    else if(delay_fn==delay_2s) ms=2000;
-    else if(delay_fn==delay_3s) ms=3000;
-    else if(delay_fn==delay_10s) ms=10000;
-    else if(delay_fn==delay_25s) ms=25000;
-    else if(delay_fn==delay_tri)  ms=16u*1000u; 
-    else if(delay_fn==delay_cruz) ms=14u*1000u; 
-
-    if(mask & (1u<<PD2)){ fig_pen_down(); }
-    if(mask & (1u<<PD3)){ fig_pen_up(); }
-
-    if(mask == (1u<<PD_X_POS))      fig_move_x_pos_ms(ms);
-    else if(mask == (1u<<PD_X_NEG)) fig_move_x_neg_ms(ms);
-    else if(mask == (1u<<PD_Y_POS)) fig_move_y_pos_ms(ms);
-    else if(mask == (1u<<PD_Y_NEG)) fig_move_y_neg_ms(ms);
-    else if(mask == ((1u<<PD_X_POS)|(1u<<PD_Y_POS)) ||
-            mask == ((1u<<PD_X_POS)|(1u<<PD_Y_NEG)) ||
-            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_POS)) ||
-            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_NEG))){
-        fig_move_diag_ms(mask, (uint16_t)ms);
+// Función genérica para mover un motor paso a paso
+void accionar_motor(volatile uint8_t *puerto_direccion, uint8_t pin_direccion,
+                    volatile uint8_t *puerto_paso, uint8_t pin_paso,
+                    uint8_t sentido_mov, uint16_t num_pasos) {
+    
+    if (sentido_mov) {
+        *puerto_direccion |= (1 << pin_direccion);
     } else {
+        *puerto_direccion &= ~(1 << pin_direccion);
+    }
+
+    pausa_corta(50);
+
+    for (uint16_t i = 0; i < num_pasos; i++) {
+        *puerto_paso |= (1 << pin_paso);
+        pausa_corta(300);
+        *puerto_paso &= ~(1 << pin_paso);
+        pausa_corta(300);
     }
 }
-static inline void out_delay_ms(uint8_t mask, uint16_t ms){
-    if(mask & (1u<<PD2)){ fig_pen_down(); }
-    if(mask & (1u<<PD3)){ fig_pen_up(); }
-    if(mask == (1u<<PD_X_POS))      fig_move_x_pos_ms(ms);
-    else if(mask == (1u<<PD_X_NEG)) fig_move_x_neg_ms(ms);
-    else if(mask == (1u<<PD_Y_POS)) fig_move_y_pos_ms(ms);
-    else if(mask == (1u<<PD_Y_NEG)) fig_move_y_neg_ms(ms);
-    else if(mask == ((1u<<PD_X_POS)|(1u<<PD_Y_POS)) ||
-            mask == ((1u<<PD_X_POS)|(1u<<PD_Y_NEG)) ||
-            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_POS)) ||
-            mask == ((1u<<PD_X_NEG)|(1u<<PD_Y_NEG))) {
-        fig_move_diag_ms(mask, ms);
-    } else { }
-}
 
-static void delay_1s(void){
-    for (uint8_t i = 0; i < 4; i++){
-        for (uint8_t j = 0; j < 200; j++){
-            for (uint8_t k = 0; k < 250; k++){
-                __asm__ __volatile__("nop");
-            }
-        }
+// Mueve un eje específico (X o Y)
+void mover_eje(uint8_t identificador_eje, uint8_t sentido, uint16_t cantidad_pasos) {
+    if (cantidad_pasos == 0) return;
+
+    if (identificador_eje == 0) { // Eje X
+        accionar_motor(&PORTB, PIN_DIR_X, &PORTB, PIN_PASO_X, sentido, cantidad_pasos);
+    } else if (identificador_eje == 1) { // Eje Y
+        accionar_motor(&PORTC, PIN_DIR_Y, &PORTC, PIN_PASO_Y, sentido, cantidad_pasos);
     }
 }
-static void delay_25s(void) { for (uint8_t n = 0; n < 8; n++) delay_1s(); }
-static void delay_2s(void)  { delay_1s(); delay_1s(); }
-static void delay_3s(void)  { delay_1s(); delay_1s(); delay_1s(); }
-static void delay_10s(void) { for (uint8_t n=0;n<10;n++) delay_1s(); }
-static void delay_tri(void) { for (uint8_t n=0; n<16u; n++) delay_1s(); }
-static void delay_cruz(void){ for (uint8_t n=0; n<14u; n++) delay_1s(); }
 
-/*Figuras*/
-static void run_sequence(void);   /* Triangulo */
-static void run_sequence2(void);  /* Cruz */
-static void run_sequence3(void);  /* Circulo */
-static void run_conejo(void);     /* Conejo */
-static void run_murcielago(void); /* Murcielago */
-
-/*Todas las figuras*/
-int main(void){
-    io_init();
-    run_sequence();
-    run_sequence3();
-    run_sequence2();
-    run_conejo();
-    run_murcielago();
-    PORTD=0;
-    for(;;){}
-    return 0;
+// Baja la pluma
+void bajar_pluma(void) {
+    PORTC &= ~(1 << PIN_PLUMA);
+    _delay_ms(100);
 }
 
-/*TRIANGULO*/
-static void run_sequence(void){
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD_X_POS), delay_tri);
-
-    out_delay((1u<<PD_Y_POS), delay_tri);
-    out_delay((1u<<PD_Y_POS), delay_tri);
-    out_delay((1u<<PD_Y_POS), delay_10s);
-
-    out_delay((1u<<PD2),      delay_1s);
-
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD_Y_POS), delay_tri);
-
-    out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_tri);
-
-    out_delay((1u<<PD_X_POS), delay_tri);
-    out_delay((1u<<PD3),      delay_1s);
-
-    out_delay_ms((1u<<PD_X_NEG), 5000);
-    out_delay_ms((1u<<PD_Y_NEG), 15000);
+// Levanta la pluma
+void subir_pluma(void) {
+    PORTC |= (1 << PIN_PLUMA);
+    _delay_ms(100);
 }
 
-/*CRUZ*/
-static void run_sequence2(void){
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_cruz);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_Y_POS), delay_cruz);
-    out_delay((1u<<PD_Y_POS), delay_cruz);
-    out_delay((1u<<PD_X_POS), delay_cruz);
-    out_delay((1u<<PD_X_POS), delay_cruz);
 
-    out_delay((1u<<PD2),      delay_1s);
+/* --- SECUENCIA CONEJO (Traducida sin posicionamiento inicial) --- */
+static void run_conejo(void) {
+    // Ya no hay movimiento inicial. La figura comienza donde esté la pluma.
 
-    out_delay((1u<<PD_X_NEG)|(1u<<PD_Y_NEG), delay_cruz);
+    bajar_pluma();
 
-    out_delay((1u<<PD3),      delay_1s);
-    out_delay((1u<<PD_X_POS), delay_cruz);
-    out_delay((1u<<PD2),      delay_1s);
+    mover_eje(0, 0, CALCULAR_PASOS(1500)); // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1500)); // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(750));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1500)); // X_POS
+    mover_eje(0, 0, CALCULAR_PASOS(125));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1375)); // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(500));  // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(1375)); // X_POS
+    mover_eje(0, 0, CALCULAR_PASOS(125));  // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(3000)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(3000)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(4500)); // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(750));  // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(1500)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(125));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1375)); // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(500));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1375)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(125));  // Y_POS
+    mover_eje(0, 0, CALCULAR_PASOS(1500)); // X_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1500)); // X_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1500)); // Y_POS
 
-    out_delay((1u<<PD_Y_POS)|(1u<<PD_Y_NEG), delay_cruz);
+    subir_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(1125)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(375));  // X_POS
 
-    out_delay((1u<<PD3),      delay_1s);
+    bajar_pluma();
 
-    out_delay_ms((1u<<PD_X_NEG), 15000);
-    out_delay_ms((1u<<PD_Y_NEG), 15000);
+    mover_eje(0, 1, CALCULAR_PASOS(750));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(750));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(750));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(750));  // X_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(750));  // Y_POS
+
+    subir_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(150)); // X_POS
+    
+    bajar_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(400)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(400)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(400)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(400)); // Y_NEG
+    
+    subir_pluma();
+        
+    mover_eje(1, 1, CALCULAR_PASOS(150)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(150)); // Y_NEG
+    
+    subir_pluma();
+    
+    mover_eje(1, 1, CALCULAR_PASOS(750));  // Y_POS
+
+    bajar_pluma();
+
+    mover_eje(0, 1, CALCULAR_PASOS(750));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(750));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(750));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(750));  // X_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(750));  // Y_POS
+
+    subir_pluma();
+
+    mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(150)); // X_POS
+    
+    bajar_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(400)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(400)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(400)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(400)); // Y_NEG
+    
+    subir_pluma();
+    
+    mover_eje(1, 1, CALCULAR_PASOS(150)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(150)); // Y_NEG
+
+    mover_eje(0, 1, CALCULAR_PASOS(250)); // X_POS
+    mover_eje(0, 0, CALCULAR_PASOS(750)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(750)); // X_POS
+
+    bajar_pluma();
+
+    mover_eje(0, 0, CALCULAR_PASOS(800)); // X_NEG
+
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 1, CALCULAR_PASOS(50)); // X_POS
+        mover_eje(1, 1, CALCULAR_PASOS(50)); // Y_POS
+    }
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 0, CALCULAR_PASOS(50)); // Y_NEG
+        mover_eje(1, 1, CALCULAR_PASOS(50)); // Y_POS
+    }
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 1, CALCULAR_PASOS(50)); // X_POS
+        mover_eje(0, 0, CALCULAR_PASOS(50)); // X_NEG
+    }
+
+    mover_eje(0, 1, CALCULAR_PASOS(750)); // X_POS
+    mover_eje(0, 0, CALCULAR_PASOS(750)); // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(750)); // Y_NEG
+
+    mover_eje(0, 1, CALCULAR_PASOS(750)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(750)); // Y_POS
+
+    mover_eje(1, 1, CALCULAR_PASOS(750)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(750)); // Y_NEG
+
+    subir_pluma();
+
+    mover_eje(1, 1, CALCULAR_PASOS(200)); // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(450)); // X_POS
+
+    bajar_pluma();
+
+    mover_eje(1, 1, CALCULAR_PASOS(750)); // Y_POS
+    mover_eje(0, 0, CALCULAR_PASOS(750)); // X_NEG
+
+    subir_pluma();
+
+    mover_eje(1, 0, CALCULAR_PASOS(375)); // Y_NEG
+
+    bajar_pluma();
+
+    mover_eje(1, 1, CALCULAR_PASOS(750)); // Y_POS
+
+    subir_pluma();
+
+    mover_eje(1, 0, CALCULAR_PASOS(375)); // Y_NEG
+
+    bajar_pluma();
+
+    mover_eje(0, 0, CALCULAR_PASOS(750)); // X_NEG
+
+    subir_pluma();
+
+    mover_eje(0, 0, CALCULAR_PASOS(1950)); // X_NEG
+
+    bajar_pluma();
+
+    mover_eje(0, 0, CALCULAR_PASOS(750)); //dibuja X_NEG
+
+    subir_pluma();
+
+    mover_eje(0, 1, CALCULAR_PASOS(375)); //posicion X_POS
+
+    bajar_pluma();
+
+    mover_eje(1, 1, CALCULAR_PASOS(600)); // Y_POS
+
+    subir_pluma();
+    
+    mover_eje(0, 1, CALCULAR_PASOS(400)); //posicion X_POS
+
+    bajar_pluma();
+
+    mover_eje(0, 0, CALCULAR_PASOS(600)); // X_NEG
+
+    subir_pluma();
+        
+    mover_eje(1, 0, CALCULAR_PASOS(6500)); // Y_NEG
 }
 
-/*CIRCULO*/
-static void run_sequence3(void){
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
-    out_delay((1u<<PD_Y_POS), delay_25s);
 
-    out_delay((1u<<PD2),      delay_1s);
+/* --- SECUENCIA MURCIELAGO (Traducida sin posicionamiento inicial) --- */
+static void run_murcielago(void) {
+    // Ya no hay movimiento inicial. La figura comienza donde esté la pluma.
 
-    out_delay((1u<<PD_X_NEG), delay_10s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_2s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_2s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_2s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_2s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_10s);
-
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_3s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_2s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_2s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_2s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_2s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_3s);
-    out_delay((1u<<PD_X_POS), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_10s);
-
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_3s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_2s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_2s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_2s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_2s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_3s);
-    out_delay((1u<<PD_Y_POS), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_10s);
-
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_3s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_2s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_2s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_1s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_2s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_2s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_3s);
-    out_delay((1u<<PD_Y_NEG), delay_1s);
-    out_delay((1u<<PD_X_NEG), delay_3s);
-
-    out_delay((1u<<PD3),      delay_1s);
-
-    out_delay_ms((1u<<PD_X_NEG), 7000);
-    out_delay_ms((1u<<PD_Y_NEG), 5000);
+    bajar_pluma();
+    //arriba
+    mover_eje(0, 0, CALCULAR_PASOS(200)); // X_NEG
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 0, CALCULAR_PASOS(150)); // Y_NEG
+        mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+    }
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+        mover_eje(0, 1, CALCULAR_PASOS(150)); // X_POS
+    }
+    mover_eje(0, 0, CALCULAR_PASOS(800)); // X_NEG
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 0, CALCULAR_PASOS(150)); // Y_NEG
+        mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+    }
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+        mover_eje(0, 1, CALCULAR_PASOS(150)); // X_POS
+    }
+    mover_eje(0, 0, CALCULAR_PASOS(200)); // X_NEG
+    
+    //derecha
+    mover_eje(0, 1, CALCULAR_PASOS(500)); // X_POS
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+        mover_eje(1, 0, CALCULAR_PASOS(150)); // Y_NEG
+    }
+    
+    mover_eje(0, 0, CALCULAR_PASOS(100)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(3000)); // X_POS
+    
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 1, CALCULAR_PASOS(150)); // Y_POS
+        mover_eje(0, 1, CALCULAR_PASOS(150)); // X_POS
+    }
+    mover_eje(1, 1, CALCULAR_PASOS(100)); // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(500)); // X_POS
+    
+    //abajo 
+    mover_eje(1, 1, CALCULAR_PASOS(6000)); // Y_POS
+    
+    //izquierda
+    mover_eje(1, 0, CALCULAR_PASOS(500)); // Y_NEG
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 1, CALCULAR_PASOS(150)); // Y_POS
+        mover_eje(1, 0, CALCULAR_PASOS(150)); // Y_NEG
+    }
+    mover_eje(1, 1, CALCULAR_PASOS(100)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(3000)); // Y_NEG
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+        mover_eje(0, 1, CALCULAR_PASOS(150)); // X_POS
+    }
+    mover_eje(0, 0, CALCULAR_PASOS(100)); // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(500)); // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(150)); // X_NEG
+    
+    subir_pluma();
+    
+    //ojos
+    mover_eje(0, 1, CALCULAR_PASOS(500)); // X_POS
+    mover_eje(0, 0, CALCULAR_PASOS(1100)); // X_NEG
+    
+    bajar_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(900)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(900)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(900)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(900)); // Y_NEG
+    
+    subir_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(3000)); // X_NEG
+    
+    bajar_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(900)); // X_NEG
+    mover_eje(0, 1, CALCULAR_PASOS(900)); // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(900)); // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(900)); // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(900)); // X_NEG
+    
+    subir_pluma();
+    
+    //boca
+    mover_eje(0, 1, CALCULAR_PASOS(1500)); // X_POS
+    
+    bajar_pluma();
+    
+    mover_eje(1, 1, CALCULAR_PASOS(4800)); // Y_POS
+    mover_eje(0, 0, CALCULAR_PASOS(4800)); // X_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000)); // Y_POS
+    
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 1, CALCULAR_PASOS(70)); // X_POS
+        mover_eje(1, 1, CALCULAR_PASOS(70)); // Y_POS
+    }
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 0, CALCULAR_PASOS(70)); // Y_NEG
+        mover_eje(1, 1, CALCULAR_PASOS(70)); // Y_POS
+    }
+    mover_eje(1, 1, CALCULAR_PASOS(700)); // Y_POS
+    for (int i = 0; i < 8; i++) {
+        mover_eje(0, 1, CALCULAR_PASOS(70)); // X_POS
+        mover_eje(1, 1, CALCULAR_PASOS(70)); // Y_POS
+    }
+    for (int i = 0; i < 8; i++) {
+        mover_eje(1, 0, CALCULAR_PASOS(70)); // Y_NEG
+        mover_eje(1, 1, CALCULAR_PASOS(70)); // Y_POS
+    }
+        
+    subir_pluma();
+        
+    // Volver al origen
+    mover_eje(1, 0, CALCULAR_PASOS(12000)); // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(18000)); // X_NEG
 }
 
-/*CONEJO*/
-static void run_conejo(void){
-    out_delay_ms((1u<<PD_X_POS), 10000);
+/* --- SECUENCIA CIRCULO (Traducida) --- */
+static void run_circulo(void) {
+    // Ya no hay movimiento inicial. La figura comienza donde esté la pluma.
 
-    out_delay_ms((1u<<PD2), 100);
+    bajar_pluma();
 
-    out_delay_ms((1u<<PD_X_NEG), 1500);
-    out_delay_ms((1u<<PD_Y_NEG), 1500);
-    out_delay_ms((1u<<PD_Y_POS), 750);
-    out_delay_ms((1u<<PD_X_POS), 1500);
-    out_delay_ms((1u<<PD_X_NEG), 125);
-    out_delay_ms((1u<<PD_Y_NEG), 1375);
-    out_delay_ms((1u<<PD_X_NEG), 500);
-    out_delay_ms((1u<<PD_X_POS), 1375);
-    out_delay_ms((1u<<PD_X_NEG), 125);
-    out_delay_ms((1u<<PD_X_POS), 3000);
-    out_delay_ms((1u<<PD_Y_POS), 3000);
-    out_delay_ms((1u<<PD_Y_NEG), 4500);
-    out_delay_ms((1u<<PD_X_NEG), 750);
-    out_delay_ms((1u<<PD_X_POS), 1500);
-    out_delay_ms((1u<<PD_Y_POS), 125);
-    out_delay_ms((1u<<PD_Y_NEG), 1375);
-    out_delay_ms((1u<<PD_Y_POS), 500);
-    out_delay_ms((1u<<PD_X_POS), 1375);
-    out_delay_ms((1u<<PD_Y_POS), 125);
-    out_delay_ms((1u<<PD_X_NEG), 1500);
-    out_delay_ms((1u<<PD_X_NEG), 1500);
-    out_delay_ms((1u<<PD_Y_POS), 1500);
+    mover_eje(1, 1, CALCULAR_PASOS(25 * 8)); // Y_POS (25s * 8)
 
-    out_delay_ms((1u<<PD3), 100);
-    out_delay_ms((1u<<PD_X_NEG), 1125);
-    out_delay_ms((1u<<PD_X_POS), 375);
+    subir_pluma();
+    _delay_ms(1000); // delay_1s
 
-    out_delay_ms((1u<<PD2), 100);
+    // Estas secuencias de movimientos en X y Y parecen intentar trazar curvas/círculos
+    // pero al ser solo movimientos en un eje a la vez, el resultado será una serie de líneas rectas
+    // moviendo alternadamente X y luego Y.
+    mover_eje(0, 0, CALCULAR_PASOS(10000)); // X_NEG (delay_10s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(3000));  // X_NEG (delay_3s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(2000));  // X_NEG (delay_2s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(2000));  // X_NEG (delay_2s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS (delay_1s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(2000));  // X_POS (delay_2s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(2000));  // X_POS (delay_2s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(3000));  // X_POS (delay_3s)
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG (delay_1s)
+    mover_eje(0, 1, CALCULAR_PASOS(10000)); // X_POS (delay_10s)
 
-    out_delay_ms((1u<<PD_X_POS), 750);
-    out_delay_ms((1u<<PD_Y_POS), 750);
-    out_delay_ms((1u<<PD_Y_NEG), 750);
-    out_delay_ms((1u<<PD_X_NEG), 750);
-    out_delay_ms((1u<<PD_Y_POS), 750);
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(3000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(2000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(2000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(2000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(2000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(3000));  // Y_POS
+    mover_eje(0, 1, CALCULAR_PASOS(1000));  // X_POS
+    mover_eje(1, 1, CALCULAR_PASOS(10000)); // Y_POS
 
-    out_delay_ms((1u<<PD3), 100);
-    out_delay_ms((1u<<PD_X_NEG), 150);
-    out_delay_ms((1u<<PD_X_POS), 150);
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(3000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(2000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(2000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(2000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(2000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(3000));  // Y_NEG
+    mover_eje(1, 1, CALCULAR_PASOS(1000));  // Y_POS
+    mover_eje(1, 0, CALCULAR_PASOS(10000)); // Y_NEG
 
-    out_delay_ms((1u<<PD2), 100);
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(3000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(2000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(2000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(1000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(2000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(2000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(3000));  // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(1000));  // Y_NEG
+    mover_eje(0, 0, CALCULAR_PASOS(3000));  // X_NEG
 
-    out_delay_ms((1u<<PD_X_NEG), 400);
-    out_delay_ms((1u<<PD_X_POS), 400);
-    out_delay_ms((1u<<PD_Y_POS), 400);
-    out_delay_ms((1u<<PD_Y_NEG), 400);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_POS), 150);
-    out_delay_ms((1u<<PD_Y_NEG), 150);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_POS), 750);
-
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_X_POS), 750);
-    out_delay_ms((1u<<PD_Y_POS), 750);
-    out_delay_ms((1u<<PD_Y_NEG), 750);
-    out_delay_ms((1u<<PD_X_NEG), 750);
-    out_delay_ms((1u<<PD_Y_POS), 750);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 150);
-    out_delay_ms((1u<<PD_X_POS), 150);
-
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 400);
-    out_delay_ms((1u<<PD_X_POS), 400);
-    out_delay_ms((1u<<PD_Y_POS), 400);
-    out_delay_ms((1u<<PD_Y_NEG), 400);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_POS), 150);
-    out_delay_ms((1u<<PD_Y_NEG), 150);
-
-    out_delay_ms((1u<<PD_X_POS), 250);
-    out_delay_ms((1u<<PD_X_NEG), 750);
-    out_delay_ms((1u<<PD_X_POS), 750);
-
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 800);
-
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_POS), 50); out_delay_ms((1u<<PD_Y_POS), 50); }
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_NEG), 50); out_delay_ms((1u<<PD_Y_POS), 50); }
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_POS), 50); out_delay_ms((1u<<PD_X_NEG), 50); }
-
-    out_delay_ms((1u<<PD_X_POS), 750);
-    out_delay_ms((1u<<PD_X_NEG), 750);
-    out_delay_ms((1u<<PD_Y_NEG), 750);
-
-    out_delay_ms((1u<<PD_X_POS), 750);
-    out_delay_ms((1u<<PD_Y_POS), 750);
-
-    out_delay_ms((1u<<PD_Y_POS), 750);
-    out_delay_ms((1u<<PD_Y_NEG), 750);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_POS), 200);
-    out_delay_ms((1u<<PD_X_POS), 450);
-
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_Y_POS), 750);
-    out_delay_ms((1u<<PD_X_NEG), 750);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_NEG), 375);
-
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_Y_POS), 750);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_NEG), 375);
-
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 750);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 1950);
-
-    out_delay_ms((1u<<PD2), 100); // baja
-    out_delay_ms((1u<<PD_X_NEG), 750); // dibuja
-    out_delay_ms((1u<<PD3), 100); // sube
-
-    out_delay_ms((1u<<PD_X_POS), 375); // posicion
-
-    out_delay_ms((1u<<PD2), 100);
-    out_delay_ms((1u<<PD_Y_POS), 600);
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_X_POS), 400); //posicion
-    out_delay_ms((1u<<PD2), 100);
-    out_delay_ms((1u<<PD_X_NEG), 600);
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_NEG), 6500);
+    subir_pluma();
+    
+    mover_eje(0, 0, CALCULAR_PASOS(7000)); // X_NEG
+    mover_eje(1, 0, CALCULAR_PASOS(5000)); // Y_NEG
 }
 
-/*MURCIELAGO*/
-static void run_murcielago(void){
-    out_delay_ms((1u<<PD_X_POS), 2000);
-    out_delay_ms((1u<<PD_Y_POS), 16000);
 
-    out_delay_ms((1u<<PD2), 100);
-    out_delay_ms((1u<<PD_X_NEG), 200);
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_NEG), 150); out_delay_ms((1u<<PD_X_NEG), 150); }
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_NEG), 150); out_delay_ms((1u<<PD_X_POS), 150); }
-    out_delay_ms((1u<<PD_X_NEG), 800);
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_NEG), 150); out_delay_ms((1u<<PD_X_NEG), 150); }
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_NEG), 150); out_delay_ms((1u<<PD_X_POS), 150); }
-    out_delay_ms((1u<<PD_X_NEG), 200);
+// Función principal
+int main(void) {
+    inicializar_hardware();
+    subir_pluma(); // Asegurarse de que la pluma esté arriba al iniciar
+    _delay_ms(500); // Pequeño retardo inicial
 
-    out_delay_ms((1u<<PD_X_POS), 500);
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_NEG), 150); out_delay_ms((1u<<PD_Y_NEG), 150); }
+    while (1) {
+        // --- Dibuja el Conejo ---
+        run_conejo();
+        subir_pluma(); // Asegura pluma arriba
+        mover_eje(0, 1, CALCULAR_PASOS(3000)); // Mueve 3 segundos de X+ para separar
 
-    out_delay_ms((1u<<PD_X_NEG), 100);
-    out_delay_ms((1u<<PD_X_POS), 3000);
+        // --- Dibuja el Murciélago ---
+        run_murcielago();
+        subir_pluma(); // Asegura pluma arriba
+        mover_eje(0, 1, CALCULAR_PASOS(3000)); // Mueve 3 segundos de X+ para separar
 
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_POS), 150); out_delay_ms((1u<<PD_X_POS), 150); }
-    out_delay_ms((1u<<PD_Y_POS), 100);
-    out_delay_ms((1u<<PD_X_POS), 500);
-
-    out_delay_ms((1u<<PD_Y_POS), 6000);
-
-    out_delay_ms((1u<<PD_Y_NEG), 500);
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_POS), 150); out_delay_ms((1u<<PD_Y_NEG), 150); }
-    out_delay_ms((1u<<PD_Y_POS), 100);
-    out_delay_ms((1u<<PD_Y_NEG), 3000);
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_NEG), 150); out_delay_ms((1u<<PD_X_POS), 150); }
-    out_delay_ms((1u<<PD_X_NEG), 100);
-    out_delay_ms((1u<<PD_Y_NEG), 500);
-    out_delay_ms((1u<<PD_X_NEG), 150);
-
-    out_delay_ms((1u<<PD3), 100);
-
-    /* ojos */
-    out_delay_ms((1u<<PD_X_POS), 500);
-    out_delay_ms((1u<<PD_X_NEG), 1100);
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 900);
-    out_delay_ms((1u<<PD_X_POS), 900);
-    out_delay_ms((1u<<PD_Y_POS), 900);
-    out_delay_ms((1u<<PD_Y_NEG), 900);
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 3000 );
-    out_delay_ms((1u<<PD2), 100);
-
-    out_delay_ms((1u<<PD_X_NEG), 900);
-    out_delay_ms((1u<<PD_X_POS), 900);
-    out_delay_ms((1u<<PD_Y_POS), 900);
-    out_delay_ms((1u<<PD_Y_NEG), 900);
-    out_delay_ms((1u<<PD_X_NEG), 900);
-    out_delay_ms((1u<<PD3), 100);
-
-    /* boca */
-    out_delay_ms((1u<<PD_X_POS), 1500);
-    out_delay_ms((1u<<PD2), 100);
-    out_delay_ms((1u<<PD_Y_POS), 4800);
-    out_delay_ms((1u<<PD_X_NEG), 4800);
-    out_delay_ms((1u<<PD_Y_POS), 1000);
-
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_POS), 70); out_delay_ms((1u<<PD_Y_POS), 70); }
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_NEG), 70); out_delay_ms((1u<<PD_Y_POS), 70); }
-    out_delay_ms((1u<<PD_Y_POS), 700);
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_X_POS), 70); out_delay_ms((1u<<PD_Y_POS), 70); }
-    for (int i = 0; i < 8; i++) { out_delay_ms((1u<<PD_Y_NEG), 70); out_delay_ms((1u<<PD_Y_POS), 70); }
-
-    out_delay_ms((1u<<PD3), 100);
-
-    out_delay_ms((1u<<PD_Y_NEG), 12000);
-    out_delay_ms((1u<<PD_X_NEG), 18000);
-    PORTD=0;
+        // --- Dibuja el Círculo ---
+        run_circulo();
+        subir_pluma(); // Asegura pluma arriba
+        mover_eje(0, 0, CALCULAR_PASOS(10000)); // Mueve 10 segundos de X- para volver un poco y separar
+        mover_eje(1, 0, CALCULAR_PASOS(10000)); // Mueve 10 segundos de Y- para volver y separar
+        
+        // Espera 5 segundos antes de repetir todo el ciclo
+        _delay_ms(5000); 
+    }
 }
