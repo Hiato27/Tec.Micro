@@ -4,6 +4,8 @@
 #define F_CPU 16000000UL
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/interrupt.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 // PWM para el calefactor
