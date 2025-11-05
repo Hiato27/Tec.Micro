@@ -8,22 +8,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// PWM para el calefactor
-// Fast PWM 8-bit
-static inline void heater_pwm_init(void){
-    DDRD  |= (1<<DDD5);                 // D5 como salida digital
-    TCCR0A = (1<<COM0B1)                // habilita OC0B en modo no invertido
-           | (1<<WGM01) | (1<<WGM00);   // Fast PWM (TOP=0xFF)
-    TCCR0B = (1<<CS01) | (1<<CS00);     // reloj de Timer0 = F_CPU/64
-    OCR0B  = 0;                         // arranca apagado 
-}
-
-// Fija el ciclo útil del heater de 0 a 255
-static inline void heater_set_pwm(uint8_t duty){
-    OCR0B = duty;                       // escribe el duty en el comparador B
-}
-
-
 static void uart_init(uint32_t baud){
 	uint16_t ubrr = (F_CPU/16/baud) - 1;
 	UBRR0H = (uint8_t)(ubrr>>8);
@@ -61,7 +45,15 @@ static int16_t lm35_tempC_from_adc(uint16_t adc){
 	uint32_t num = (uint32_t)adc * 500UL + 511UL;
 	return (int16_t)(num / 1023UL);
 }
-
+// PWM para el calefactor
+// Fast PWM 8-bit
+static void pwm_heater_init(void){
+	DDRD  |= (1<<DDD5);
+	TCCR0A = (1<<COM0B1) | (1<<WGM01) | (1<<WGM00);
+	TCCR0B = (1<<CS01) | (1<<CS00);
+	OCR0B  = 0;
+}
+static inline void heater_set_pwm(uint8_t duty){ OCR0B = duty; } // escribe el duty en el comparador B
 
 static void pwm_fan_init(void){
 	DDRB  |= (1<<DDB3);
@@ -170,5 +162,7 @@ int main(void){
 		t++;
 	}
 }
+
+
 
 
