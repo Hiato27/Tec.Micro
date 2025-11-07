@@ -5,9 +5,10 @@
 #include <stdint.h>
 
 // Parámetros generales
-#define ADC_AVG   8      // Lecturas promediamos del ADC
-#define PWM_MAX   255    // Límite de 8 bits para el PWM
-#define DEADZONE  15     // Zona muerta (rango de aceptacion)
+#define ADC_AVG   10      // Lecturas promediamos del ADC
+#define PWM_MAX   15    // Límite de 8 bits para el PWM
+#define DEADZONE  30     // Zona muerta (rango de aceptacion)
+
 
 // UART a 9600 
 // Inicializo UART 
