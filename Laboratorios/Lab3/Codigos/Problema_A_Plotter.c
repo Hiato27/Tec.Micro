@@ -18,13 +18,13 @@
 #define PIN_PLUMA    PC0
 
 #define PASOS_POR_SEGUNDO 50.0 
-#define DELAY_TRI_MS    16000.0 //16 segundos
-#define DELAY_CRUZ_MS   14000.0 //14 segundos
-#define DELAY_1S_MS     1000.0
-#define DELAY_2S_MS     2000.0
-#define DELAY_3S_MS     3000.0
-#define DELAY_10S_MS    10000.0
-#define DELAY_25S_MS_REAL 8000.0 // 8 * 1s
+#define DELAY_TRI_MS    16000.0 
+#define DELAY_CRUZ_MS   14000.0 
+#define DELAY_1S_MS     250.0
+#define DELAY_2S_MS     500.0
+#define DELAY_3S_MS     750.0
+#define DELAY_10S_MS    2500.0
+#define DELAY_25S_MS_REAL 4000.0 
 #define CALCULAR_PASOS(ms) (uint16_t)((ms / 1000.0) * PASOS_POR_SEGUNDO)
 
 static inline void pausa_corta(uint16_t ciclos) {
@@ -58,6 +58,7 @@ uint8_t sentido_mov, uint16_t num_pasos) {
 	}
 }
 
+// Mueve un eje específico (X o Y)
 void mover_eje(uint8_t identificador_eje, uint8_t sentido, uint16_t cantidad_pasos) {
 	if (cantidad_pasos == 0) return;
 	if (identificador_eje == 0) {
@@ -108,11 +109,11 @@ static void run_sequence(void) {
 	mover_eje(1, 1, CALCULAR_PASOS(DELAY_TRI_MS));
 	mover_diagonal(0, 0, CALCULAR_PASOS(DELAY_TRI_MS));
 
-	mover_eje(0, 1, CALCULAR_PASOS(DELAY_TRI_MS));
 	subir_pluma();
 	_delay_ms(900);
-	mover_eje(0, 0, CALCULAR_PASOS(5000));
-	mover_eje(1, 0, CALCULAR_PASOS(15000));
+	mover_eje(0, 1, CALCULAR_PASOS(DELAY_TRI_MS));
+	mover_eje(0, 0, CALCULAR_PASOS(500));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
 }
 
 /*CRUZ */
@@ -128,8 +129,8 @@ static void run_sequence2(void) {
 	_delay_ms(900);
 	subir_pluma();
 	_delay_ms(900);
-	mover_eje(0, 0, CALCULAR_PASOS(15000));
-	mover_eje(1, 0, CALCULAR_PASOS(15000));
+	mover_eje(0, 0, CALCULAR_PASOS(2000));
+	mover_eje(1, 0, CALCULAR_PASOS(2000));
 }
 
 /*CIRCULO */
@@ -138,7 +139,7 @@ static void run_sequence3(void) {
 	_delay_ms(900);
 	
 	mover_eje(1, 1, CALCULAR_PASOS(DELAY_10S_MS));
-	mover_eje(0, 0, CALCULAR_PASOS(DELAY_1S_MS)); //11 derecha, 00 abajo, 01 arriba ,10 izquierda
+	mover_eje(0, 0, CALCULAR_PASOS(DELAY_1S_MS)); 
 	mover_eje(1, 1, CALCULAR_PASOS(DELAY_3S_MS));
 	mover_eje(0, 0, CALCULAR_PASOS(DELAY_1S_MS));
 	mover_eje(1, 1, CALCULAR_PASOS(DELAY_2S_MS));
@@ -161,7 +162,7 @@ static void run_sequence3(void) {
 	mover_eje(0, 0, CALCULAR_PASOS(DELAY_10S_MS));
 	
 	mover_eje(1, 0, CALCULAR_PASOS(DELAY_1S_MS));
-	mover_eje(0, 0, CALCULAR_PASOS(DELAY_3S_MS)); //11 derecha, 00 abajo, 01 arriba ,10 izquierda
+	mover_eje(0, 0, CALCULAR_PASOS(DELAY_3S_MS)); 
 	mover_eje(1, 0, CALCULAR_PASOS(DELAY_1S_MS));
 	mover_eje(0, 0, CALCULAR_PASOS(DELAY_2S_MS));
 	mover_eje(1, 0, CALCULAR_PASOS(DELAY_1S_MS));
@@ -183,7 +184,7 @@ static void run_sequence3(void) {
 	mover_eje(1, 0, CALCULAR_PASOS(DELAY_10S_MS));
 
 	mover_eje(0, 1, CALCULAR_PASOS(DELAY_1S_MS));
-	mover_eje(1, 0, CALCULAR_PASOS(DELAY_3S_MS)); //11 derecha, 00 abajo, 01 arriba ,10 izquierda
+	mover_eje(1, 0, CALCULAR_PASOS(DELAY_3S_MS)); 
 	mover_eje(0, 1, CALCULAR_PASOS(DELAY_1S_MS));
 	mover_eje(1, 0, CALCULAR_PASOS(DELAY_2S_MS));
 	mover_eje(0, 1, CALCULAR_PASOS(DELAY_1S_MS));
@@ -204,7 +205,7 @@ static void run_sequence3(void) {
 	mover_eje(1, 0, CALCULAR_PASOS(DELAY_1S_MS));
 	mover_eje(0, 1, CALCULAR_PASOS(DELAY_10S_MS));
 	
-	mover_eje(1, 1, CALCULAR_PASOS(DELAY_1S_MS)); //11 derecha, 00 abajo, 01 arriba ,10 izquierda
+	mover_eje(1, 1, CALCULAR_PASOS(DELAY_1S_MS)); 
 	mover_eje(0, 1, CALCULAR_PASOS(DELAY_3S_MS));
 	mover_eje(1, 1, CALCULAR_PASOS(DELAY_1S_MS));
 	mover_eje(0, 1, CALCULAR_PASOS(DELAY_2S_MS));
@@ -230,325 +231,331 @@ static void run_sequence3(void) {
 	_delay_ms(900);
 }
 
-/* CONEJO */
+//conejo 
 static void run_conejo(void) {
-	mover_eje(1, 0, CALCULAR_PASOS(10000));
+	mover_eje(0, 0, CALCULAR_PASOS(2000));
+	mover_eje(1, 0, CALCULAR_PASOS(15000));
+	bajar_pluma();
+
+	mover_eje(1, 1, CALCULAR_PASOS(3000));
+	mover_eje(0, 1, CALCULAR_PASOS(3000));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+	mover_eje(0, 0, CALCULAR_PASOS(3000));
+	mover_eje(1, 1, CALCULAR_PASOS(250));
+	mover_eje(0, 1, CALCULAR_PASOS(2750));
+	mover_eje(1, 1, CALCULAR_PASOS(1000));
+	mover_eje(0, 0, CALCULAR_PASOS(2750));
+	mover_eje(1, 1, CALCULAR_PASOS(250));
+	mover_eje(0, 0, CALCULAR_PASOS(6000));
+	mover_eje(1, 0, CALCULAR_PASOS(6000));
+	mover_eje(0, 1, CALCULAR_PASOS(9000));
+	mover_eje(1, 1, CALCULAR_PASOS(1500));
+	mover_eje(0, 0, CALCULAR_PASOS(3000));
+	mover_eje(1, 0, CALCULAR_PASOS(250));
+	mover_eje(0, 1, CALCULAR_PASOS(2750));
+	mover_eje(1, 0, CALCULAR_PASOS(1000));
+	mover_eje(0, 0, CALCULAR_PASOS(2750));
+	mover_eje(1, 0, CALCULAR_PASOS(250));
+	mover_eje(1, 1, CALCULAR_PASOS(3000));
+	mover_eje(1, 1, CALCULAR_PASOS(3000));
+	mover_eje(1, 0, CALCULAR_PASOS(3000));
+
+	subir_pluma();
+	mover_eje(1, 1, CALCULAR_PASOS(2250));
+	mover_eje(0, 0, CALCULAR_PASOS(750));
 
 	bajar_pluma();
 
-	mover_eje(1, 1, CALCULAR_PASOS(1500));
+	mover_eje(0, 0, CALCULAR_PASOS(1500));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
 	mover_eje(0, 1, CALCULAR_PASOS(1500));
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-	mover_eje(1, 0, CALCULAR_PASOS(1500));
-	mover_eje(1, 1, CALCULAR_PASOS(125));
-	mover_eje(0, 1, CALCULAR_PASOS(1375));
-	mover_eje(1, 1, CALCULAR_PASOS(500));
-	mover_eje(1, 0, CALCULAR_PASOS(1375));
-	mover_eje(1, 1, CALCULAR_PASOS(125));
-	mover_eje(1, 0, CALCULAR_PASOS(3000));
-	mover_eje(0, 0, CALCULAR_PASOS(3000));
-	mover_eje(0, 1, CALCULAR_PASOS(4500));
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-	mover_eje(1, 0, CALCULAR_PASOS(1500));
-	mover_eje(0, 0, CALCULAR_PASOS(125));
-	mover_eje(0, 1, CALCULAR_PASOS(1375));
-	mover_eje(0, 0, CALCULAR_PASOS(500));
-	mover_eje(1, 0, CALCULAR_PASOS(1375));
-	mover_eje(0, 0, CALCULAR_PASOS(125));
 	mover_eje(1, 1, CALCULAR_PASOS(1500));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+
+	subir_pluma();
+	
+	mover_eje(1, 1, CALCULAR_PASOS(300));
+	mover_eje(0, 0, CALCULAR_PASOS(300));
+	
+	bajar_pluma();
+	
+	mover_eje(1, 1, CALCULAR_PASOS(800));
+	mover_eje(0, 0, CALCULAR_PASOS(800));
+	mover_eje(1, 0, CALCULAR_PASOS(800));
+	mover_eje(0, 1, CALCULAR_PASOS(800));
+	
+	subir_pluma();
+	
+	mover_eje(1, 0, CALCULAR_PASOS(300));
+	mover_eje(0, 1, CALCULAR_PASOS(300));
+	
+	subir_pluma();
+	
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+
+	bajar_pluma();
+
+	mover_eje(0, 0, CALCULAR_PASOS(1500));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+	mover_eje(0, 1, CALCULAR_PASOS(1500));
+	mover_eje(1, 1, CALCULAR_PASOS(1500));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+
+	subir_pluma();
+
+	mover_eje(1, 1, CALCULAR_PASOS(300));
+	mover_eje(0, 0, CALCULAR_PASOS(300));
+	
+	bajar_pluma();
+	
+	mover_eje(1, 1, CALCULAR_PASOS(800));
+	mover_eje(0, 0, CALCULAR_PASOS(800));
+	mover_eje(1, 0, CALCULAR_PASOS(800));
+	mover_eje(0, 1, CALCULAR_PASOS(800));
+	
+	subir_pluma();
+	
+	mover_eje(1, 0, CALCULAR_PASOS(300));
+	mover_eje(0, 1, CALCULAR_PASOS(300));
+
+	mover_eje(0, 0, CALCULAR_PASOS(500));
 	mover_eje(1, 1, CALCULAR_PASOS(1500));
 	mover_eje(0, 0, CALCULAR_PASOS(1500));
 
-	subir_pluma();
-	mover_eje(1, 1, CALCULAR_PASOS(1125));
-	mover_eje(1, 0, CALCULAR_PASOS(375));
-
 	bajar_pluma();
 
-	mover_eje(1, 0, CALCULAR_PASOS(750));
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-	mover_eje(0, 1, CALCULAR_PASOS(750));
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-
-	subir_pluma();
-	
-	mover_eje(1, 1, CALCULAR_PASOS(150));
-	mover_eje(1, 0, CALCULAR_PASOS(150));
-	
-	bajar_pluma();
-	
-	mover_eje(1, 1, CALCULAR_PASOS(400));
-	mover_eje(1, 0, CALCULAR_PASOS(400));
-	mover_eje(0, 0, CALCULAR_PASOS(400));
-	mover_eje(0, 1, CALCULAR_PASOS(400));
-	
-	subir_pluma();
-	
-	mover_eje(0, 0, CALCULAR_PASOS(150));
-	mover_eje(0, 1, CALCULAR_PASOS(150));
-	
-	subir_pluma();
-	
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-
-	bajar_pluma();
-
-	mover_eje(1, 0, CALCULAR_PASOS(750));
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-	mover_eje(0, 1, CALCULAR_PASOS(750));
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-
-	subir_pluma();
-
-	mover_eje(1, 1, CALCULAR_PASOS(150));
-	mover_eje(1, 0, CALCULAR_PASOS(150));
-	
-	bajar_pluma();
-	
-	mover_eje(1, 1, CALCULAR_PASOS(400));
-	mover_eje(1, 0, CALCULAR_PASOS(400));
-	mover_eje(0, 0, CALCULAR_PASOS(400));
-	mover_eje(0, 1, CALCULAR_PASOS(400));
-	
-	subir_pluma();
-	
-	mover_eje(0, 0, CALCULAR_PASOS(150));
-	mover_eje(0, 1, CALCULAR_PASOS(150));
-
-	mover_eje(1, 0, CALCULAR_PASOS(250));
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-	mover_eje(1, 0, CALCULAR_PASOS(750));
-
-	bajar_pluma();
-
-	mover_eje(1, 1, CALCULAR_PASOS(800));
+	mover_eje(1, 1, CALCULAR_PASOS(1600));
 
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 0, CALCULAR_PASOS(50));
-		mover_eje(0, 0, CALCULAR_PASOS(50));
+		mover_eje(0, 0, CALCULAR_PASOS(100));
+		mover_eje(1, 0, CALCULAR_PASOS(100));
 	}
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 1, CALCULAR_PASOS(50));
-		mover_eje(0, 0, CALCULAR_PASOS(50));
+		mover_eje(0, 1, CALCULAR_PASOS(100));
+		mover_eje(1, 0, CALCULAR_PASOS(100));
 	}
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 0, CALCULAR_PASOS(50));
-		mover_eje(1, 1, CALCULAR_PASOS(50));
+		mover_eje(0, 0, CALCULAR_PASOS(100));
+		mover_eje(1, 1, CALCULAR_PASOS(100));
 	}
 
-	mover_eje(1, 0, CALCULAR_PASOS(750));
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-	mover_eje(0, 1, CALCULAR_PASOS(750));
+	mover_eje(0, 0, CALCULAR_PASOS(1500));
+	mover_eje(1, 1, CALCULAR_PASOS(1500));
+	mover_eje(0, 1, CALCULAR_PASOS(1500));
 
-	mover_eje(1, 0, CALCULAR_PASOS(750));
-	mover_eje(0, 0, CALCULAR_PASOS(750));
+	mover_eje(0, 0, CALCULAR_PASOS(1500));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
 
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-	mover_eje(0, 1, CALCULAR_PASOS(750));
-
-	subir_pluma();
-
-	mover_eje(0, 0, CALCULAR_PASOS(200));
-	mover_eje(1, 0, CALCULAR_PASOS(450));
-
-	bajar_pluma();
-
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-	mover_eje(1, 1, CALCULAR_PASOS(750));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+	mover_eje(0, 1, CALCULAR_PASOS(1500));
 
 	subir_pluma();
 
-	mover_eje(0, 1, CALCULAR_PASOS(375));
-
-	bajar_pluma();
-
-	mover_eje(0, 0, CALCULAR_PASOS(750));
-
-	subir_pluma();
-
-	mover_eje(0, 1, CALCULAR_PASOS(375));
-
-	bajar_pluma();
-
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-
-	subir_pluma();
-
-	mover_eje(1, 1, CALCULAR_PASOS(1950));
-
-	bajar_pluma();
-
-	mover_eje(1, 1, CALCULAR_PASOS(750));
-
-	subir_pluma();
-
-	mover_eje(1, 0, CALCULAR_PASOS(375));
-
-	bajar_pluma();
-
-	mover_eje(0, 0, CALCULAR_PASOS(600));
-
-	subir_pluma();
-	
 	mover_eje(1, 0, CALCULAR_PASOS(400));
+	mover_eje(0, 0, CALCULAR_PASOS(900));
 
 	bajar_pluma();
 
-	mover_eje(1, 1, CALCULAR_PASOS(600));
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+	mover_eje(1, 1, CALCULAR_PASOS(1500));
+
+	subir_pluma();
+
+	mover_eje(0, 1, CALCULAR_PASOS(750));
+
+	bajar_pluma();
+
+	mover_eje(1, 0, CALCULAR_PASOS(1500));
+
+	subir_pluma();
+
+	mover_eje(0, 1, CALCULAR_PASOS(750));
+
+	bajar_pluma();
+
+	mover_eje(1, 1, CALCULAR_PASOS(1500));
+
+	subir_pluma();
+
+	mover_eje(1, 1, CALCULAR_PASOS(3900));
+
+	bajar_pluma();
+
+	mover_eje(1, 1, CALCULAR_PASOS(1500));
+
+	subir_pluma();
+
+	mover_eje(0, 0, CALCULAR_PASOS(750));
+
+	bajar_pluma();
+
+	mover_eje(1, 0, CALCULAR_PASOS(1200));
 
 	subir_pluma();
 	
-	mover_eje(0, 1, CALCULAR_PASOS(6500));
+	mover_eje(0, 0, CALCULAR_PASOS(800));
+
+	bajar_pluma();
+
+	mover_eje(1, 1, CALCULAR_PASOS(1200));
+
+	subir_pluma();
+	
+	mover_eje(0, 0, CALCULAR_PASOS(10000));
 }
+
 
 /* Murcielago */
 static void run_murcielago(void) {
 
 	bajar_pluma();
 	//arriba
-	mover_eje(1, 1, CALCULAR_PASOS(200));
+	mover_eje(1, 1, CALCULAR_PASOS(400));    
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 1, CALCULAR_PASOS(150));
-		mover_eje(1, 1, CALCULAR_PASOS(150));
+		mover_eje(0, 1, CALCULAR_PASOS(300));
+		mover_eje(1, 1, CALCULAR_PASOS(300));
 	}
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 1, CALCULAR_PASOS(150));
-		mover_eje(1, 0, CALCULAR_PASOS(150));
+		mover_eje(1, 1, CALCULAR_PASOS(300));
+		mover_eje(0, 0, CALCULAR_PASOS(300));
 	}
-	mover_eje(1, 1, CALCULAR_PASOS(800));
+	mover_eje(1, 1, CALCULAR_PASOS(1600));
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 1, CALCULAR_PASOS(150));
-		mover_eje(1, 1, CALCULAR_PASOS(150));
+		mover_eje(0, 1, CALCULAR_PASOS(300));
+		mover_eje(1, 1, CALCULAR_PASOS(300));
 	}
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 1, CALCULAR_PASOS(150));
-		mover_eje(1, 0, CALCULAR_PASOS(150));
+		mover_eje(1, 1, CALCULAR_PASOS(300));
+		mover_eje(0, 0, CALCULAR_PASOS(300)); 
 	}
-	mover_eje(1, 1, CALCULAR_PASOS(200));
+	mover_eje(1, 1, CALCULAR_PASOS(400));
 	
 	//derecha
-	mover_eje(1, 0, CALCULAR_PASOS(500));
+	mover_eje(0, 0, CALCULAR_PASOS(1000)); 
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 1, CALCULAR_PASOS(150));
-		mover_eje(0, 1, CALCULAR_PASOS(150));
+		mover_eje(1, 1, CALCULAR_PASOS(300));
+		mover_eje(0, 1, CALCULAR_PASOS(300));
 	}
 	
-	mover_eje(1, 1, CALCULAR_PASOS(100));
-	mover_eje(1, 0, CALCULAR_PASOS(3000));
+	mover_eje(1, 1, CALCULAR_PASOS(200));
+	mover_eje(0, 0, CALCULAR_PASOS(6000)); 
 	
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 0, CALCULAR_PASOS(150));
-		mover_eje(1, 0, CALCULAR_PASOS(150));
+		mover_eje(1, 0, CALCULAR_PASOS(300)); 
+		mover_eje(0, 0, CALCULAR_PASOS(300)); 
 	}
-	mover_eje(0, 0, CALCULAR_PASOS(100));
-	mover_eje(1, 0, CALCULAR_PASOS(500));
+	mover_eje(1, 0, CALCULAR_PASOS(200)); 
+	mover_eje(0, 0, CALCULAR_PASOS(1000)); 
 	
 	//abajo
-	mover_eje(0, 0, CALCULAR_PASOS(6000));
+	mover_eje(1, 0, CALCULAR_PASOS(12000)); 
 	
 	//izquierda
-	mover_eje(0, 1, CALCULAR_PASOS(500));
+	mover_eje(0, 1, CALCULAR_PASOS(1000));
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 0, CALCULAR_PASOS(150));
-		mover_eje(0, 1, CALCULAR_PASOS(150));
+		mover_eje(1, 0, CALCULAR_PASOS(300)); 
+		mover_eje(0, 1, CALCULAR_PASOS(300));
 	}
-	mover_eje(0, 0, CALCULAR_PASOS(100));
-	mover_eje(0, 1, CALCULAR_PASOS(3000));
+	mover_eje(1, 0, CALCULAR_PASOS(200)); 
+	mover_eje(0, 1, CALCULAR_PASOS(6000));
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 1, CALCULAR_PASOS(150));
-		mover_eje(1, 0, CALCULAR_PASOS(150));
+		mover_eje(1, 1, CALCULAR_PASOS(300));
+		mover_eje(0, 0, CALCULAR_PASOS(300));
 	}
-	mover_eje(1, 1, CALCULAR_PASOS(100));
-	mover_eje(0, 1, CALCULAR_PASOS(500));
-	mover_eje(1, 1, CALCULAR_PASOS(150));
+	mover_eje(1, 1, CALCULAR_PASOS(200));
+	mover_eje(0, 1, CALCULAR_PASOS(1000));
+	mover_eje(1, 1, CALCULAR_PASOS(300));
 	
 	subir_pluma();
 	
 	//ojos
-	mover_eje(1, 0, CALCULAR_PASOS(500));
-	mover_eje(1, 1, CALCULAR_PASOS(1100));
+	mover_eje(0, 0, CALCULAR_PASOS(1000)); 
+	mover_eje(1, 1, CALCULAR_PASOS(2200));
 	
 	bajar_pluma();
 	
-	mover_eje(1, 1, CALCULAR_PASOS(900));
-	mover_eje(1, 0, CALCULAR_PASOS(900));
-	mover_eje(0, 0, CALCULAR_PASOS(900));
-	mover_eje(0, 1, CALCULAR_PASOS(900));
+	mover_eje(1, 1, CALCULAR_PASOS(1800));
+	mover_eje(0, 0, CALCULAR_PASOS(1800)); 
+	mover_eje(1, 0, CALCULAR_PASOS(1800)); 
+	mover_eje(0, 1, CALCULAR_PASOS(1800));
 	
 	subir_pluma();
 	
-	mover_eje(1, 1, CALCULAR_PASOS(3000));
+	mover_eje(1, 1, CALCULAR_PASOS(6000));
 	
 	bajar_pluma();
 	
-	mover_eje(1, 1, CALCULAR_PASOS(900));
-	mover_eje(1, 0, CALCULAR_PASOS(900));
-	mover_eje(0, 0, CALCULAR_PASOS(900));
-	mover_eje(0, 1, CALCULAR_PASOS(900));
-	mover_eje(1, 1, CALCULAR_PASOS(900));
+	mover_eje(1, 1, CALCULAR_PASOS(1800));
+	mover_eje(0, 0, CALCULAR_PASOS(1800)); 
+	mover_eje(1, 0, CALCULAR_PASOS(1800)); 
+	mover_eje(0, 1, CALCULAR_PASOS(1800));
+	mover_eje(1, 1, CALCULAR_PASOS(1800));
 	
 	subir_pluma();
 	
 	//boca
-	mover_eje(1, 0, CALCULAR_PASOS(1500));
+	mover_eje(0, 0, CALCULAR_PASOS(3000));
 	
 	bajar_pluma();
 	
-	mover_eje(0, 0, CALCULAR_PASOS(4800));
-	mover_eje(1, 1, CALCULAR_PASOS(4800));
-	mover_eje(0, 0, CALCULAR_PASOS(1000));
+	mover_eje(1, 0, CALCULAR_PASOS(9600)); 
+	mover_eje(1, 1, CALCULAR_PASOS(9600));
+	mover_eje(1, 0, CALCULAR_PASOS(2000)); 
 	
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 0, CALCULAR_PASOS(70));
-		mover_eje(0, 0, CALCULAR_PASOS(70));
+		mover_eje(0, 0, CALCULAR_PASOS(140));
+		mover_eje(1, 0, CALCULAR_PASOS(140)); 
 	}
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 1, CALCULAR_PASOS(70));
-		mover_eje(0, 0, CALCULAR_PASOS(70));
+		mover_eje(0, 1, CALCULAR_PASOS(140));
+		mover_eje(1, 0, CALCULAR_PASOS(140)); 
 	}
-	mover_eje(0, 0, CALCULAR_PASOS(700));
+	mover_eje(1, 0, CALCULAR_PASOS(1400)); 
 	for (int i = 0; i < 8; i++) {
-		mover_eje(1, 0, CALCULAR_PASOS(70));
-		mover_eje(0, 0, CALCULAR_PASOS(70));
+		mover_eje(0, 0, CALCULAR_PASOS(140)); 
+		mover_eje(1, 0, CALCULAR_PASOS(140));
 	}
 	for (int i = 0; i < 8; i++) {
-		mover_eje(0, 1, CALCULAR_PASOS(70));
-		mover_eje(0, 0, CALCULAR_PASOS(70));
+		mover_eje(0, 1, CALCULAR_PASOS(140));
+		mover_eje(1, 0, CALCULAR_PASOS(140)); 
 	}
 	
 	subir_pluma();
 	
-	mover_eje(0, 1, CALCULAR_PASOS(12000));
-	mover_eje(1, 1, CALCULAR_PASOS(18000));
-}
 
+}
 int main(void) {
 	inicializar_hardware();
 	subir_pluma();
 	_delay_ms(500);
 	
+	run_sequence();
+	subir_pluma();
+
+	
+	run_sequence2();
+	subir_pluma();
+
+	
+	run_sequence3();
+	subir_pluma();
+	
+	run_conejo();
+	subir_pluma();
+
+	run_murcielago();
+	subir_pluma();
+
+	_delay_ms(2000); 
+	mover_eje(1, 1, CALCULAR_PASOS(50000.0));
+	
+	_delay_ms(500); 
+	
+	PORTB |= (1 << PIN_HAB_X);
+	PORTC |= (1 << PIN_HAB_Y);
 	
 	while (1) {
-		
-		run_sequence();
-		subir_pluma();
-
-		
-		run_sequence2();
-		subir_pluma();
-	
-		
-		run_sequence3();
-		subir_pluma();
-		
-		run_conejo();
-		subir_pluma();
-
-		run_murcielago();
-		subir_pluma();
-		
-		_delay_ms(5000);
 	}
+	
+
 }
