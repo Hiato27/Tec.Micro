@@ -1,0 +1,235 @@
+#define F_CPU 16000000UL
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <avr/pgmspace.h>
+#include <stdint.h>
+
+/* =================== Config de niveles activos =================== */
+/* Ajustá estos dos según tu cableado/transistores: */
+#define ROW_ACTIVE_HIGH 1    /* 1: fila encendida = nivel alto en el pin de fila */
+#define COL_ACTIVE_HIGH 1    /* 1: columna encendida = nivel alto en el pin de columna */
+
+/* =================== UART =================== */
+#define BAUD 9600UL
+#define UBRR_VALUE ((F_CPU/(16UL*BAUD))-1)
+
+/* =================== Máscara de pines =================== */
+/* Columnas en B: PB4, PB5 */
+#define COL_MASK_PORTB ((1<<PB4)|(1<<PB5))
+/* Columnas en C: PC0..PC5 */
+#define COL_MASK_PORTC ((1<<PC0)|(1<<PC1)|(1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5))
+/* Filas en D: PD4..PD7 */
+#define ROW_MASK_PORTD ((1<<PD4)|(1<<PD5)|(1<<PD6)|(1<<PD7))
+/* Filas en B: PB0..PB3 */
+#define ROW_MASK_PORTB ((1<<PB0)|(1<<PB1)|(1<<PB2)|(1<<PB3))
+
+/* =================== Estado global =================== */
+typedef enum { MODE_ANIM=0, MODE_TEST_SOLID, MODE_TEST_CHECKER, MODE_TEST_BORDER } mode_t;
+volatile mode_t g_mode = MODE_ANIM;
+volatile uint8_t g_anim = 1;          /* 1 o 2 */
+volatile uint8_t g_frame = 0;         /* índice del frame actual */
+volatile uint16_t g_ms = 0;           /* contador de milisegundos (aprox) */
+
+/* =================== Frames (en PROGMEM) ===================
+ * Cada frame es 8 bytes (fila 0..7). bit0->C1 ... bit7->C8.
+ * Usamos figuras simétricas para que no importe si C1 está a la izquierda o derecha.
+ */
+
+/* Animación 1: Smiley que parpadea (2 frames) */
+#define ANIM1_FRAMES 2
+const uint8_t anim1_frames[ANIM1_FRAMES][8] PROGMEM = {
+    /* Smiley ojos abiertos */
+    { 0x3C, 0x42, 0xA5, 0x81, 0xA1, 0x99, 0x42, 0x3C },
+    /* Smiley ojos cerrados */
+    { 0x3C, 0x42, 0x81, 0x81, 0xA1, 0x99, 0x42, 0x3C }
+};
+
+/* Animación 2: Corazón que late (3 frames) */
+#define ANIM2_FRAMES 3
+const uint8_t anim2_frames[ANIM2_FRAMES][8] PROGMEM = {
+    /* pequeño */
+    { 0x00, 0x66, 0xFF, 0xFF, 0x7E, 0x3C, 0x18, 0x00 },
+    /* mediano */
+    { 0x18, 0x7E, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x18 },
+    /* grande */
+    { 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C }
+};
+
+/* Velocidad de animación (ms por frame aprox) */
+#define ANIM1_DT_MS 160
+#define ANIM2_DT_MS 120
+
+/* =================== Utilidades de bajo nivel =================== */
+
+/* Apaga TODAS las filas */
+static inline void rows_all_off(void) {
+#if ROW_ACTIVE_HIGH
+    PORTD &= ~ROW_MASK_PORTD;
+    PORTB &= ~ROW_MASK_PORTB;
+#else
+    PORTD |= ROW_MASK_PORTD;
+    PORTB |= ROW_MASK_PORTB;
+#endif
+}
+
+/* Enciende UNA fila por índice 0..7 (F1..F8) */
+static inline void row_on(uint8_t idx) {
+    if (idx < 4) {
+#if ROW_ACTIVE_HIGH
+        PORTD |= (1 << (PD4 + idx));
+#else
+        PORTD &= ~(1 << (PD4 + idx));
+#endif
+    } else {
+        uint8_t b = idx - 4;
+#if ROW_ACTIVE_HIGH
+        PORTB |= (1 << (PB0 + b));
+#else
+        PORTB &= ~(1 << (PB0 + b));
+#endif
+    }
+}
+
+/* Apaga/Enciende columnas según el byte de la fila */
+static inline void set_columns(uint8_t pattern) {
+    /* mapear bits del pattern a pines físicos */
+    uint8_t b_bits = 0;
+    uint8_t c_bits = 0;
+    if (pattern & (1<<0)) b_bits |= (1<<PB4); /* C1 */
+    if (pattern & (1<<1)) b_bits |= (1<<PB5); /* C2 */
+    if (pattern & (1<<2)) c_bits |= (1<<PC0); /* C3 */
+    if (pattern & (1<<3)) c_bits |= (1<<PC1); /* C4 */
+    if (pattern & (1<<4)) c_bits |= (1<<PC2); /* C5 */
+    if (pattern & (1<<5)) c_bits |= (1<<PC3); /* C6 */
+    if (pattern & (1<<6)) c_bits |= (1<<PC4); /* C7 */
+    if (pattern & (1<<7)) c_bits |= (1<<PC5); /* C8 */
+
+#if COL_ACTIVE_HIGH
+    PORTB = (PORTB & ~COL_MASK_PORTB) | b_bits;
+    PORTC = (PORTC & ~COL_MASK_PORTC) | c_bits;
+#else
+    PORTB = (PORTB & ~COL_MASK_PORTB) | ((~b_bits) & COL_MASK_PORTB);
+    PORTC = (PORTC & ~COL_MASK_PORTC) | ((~c_bits) & COL_MASK_PORTC);
+#endif
+}
+
+/* Lee un byte (fila) del frame activo (desde PROGMEM) */
+static inline uint8_t fetch_row(uint8_t anim, uint8_t frame, uint8_t row) {
+    if (g_mode != MODE_ANIM) {
+        /* patrones de prueba */
+        if (g_mode == MODE_TEST_SOLID) {
+            return 0xFF;
+        } else if (g_mode == MODE_TEST_CHECKER) {
+            return (row & 1) ? 0xAA : 0x55;
+        } else { /* MODE_TEST_BORDER */
+            if (row == 0 || row == 7) return 0xFF;
+            return 0x81;
+        }
+    }
+    if (anim == 1) {
+        return pgm_read_byte(&anim1_frames[frame % ANIM1_FRAMES][row]);
+    } else {
+        return pgm_read_byte(&anim2_frames[frame % ANIM2_FRAMES][row]);
+    }
+}
+
+static inline uint16_t frame_dt_ms(uint8_t anim) {
+    return (anim == 1) ? ANIM1_DT_MS : ANIM2_DT_MS;
+}
+
+static inline uint8_t frames_count(uint8_t anim) {
+    return (anim == 1) ? ANIM1_FRAMES : ANIM2_FRAMES;
+}
+
+/* =================== ISRs =================== */
+/* Timer2: CTC a ~1 kHz -> multiplexado de filas y timebase de ms */
+ISR(TIMER2_COMPA_vect) {
+    static uint8_t row = 0;
+    /* apaga filas, escribe columnas de la fila actual y vuelve a encender esa fila */
+    rows_all_off();
+    uint8_t pat = fetch_row(g_anim, g_frame, row);
+    set_columns(pat);
+    row_on(row);
+
+    row = (row + 1) & 0x07;  /* 0..7 */
+    g_ms++;                  /* ~1 ms por tick */
+    /* cambiar frame cuando toque */
+    if (g_mode == MODE_ANIM) {
+        if (g_ms >= frame_dt_ms(g_anim)) {
+            g_ms = 0;
+            g_frame = (g_frame + 1) % frames_count(g_anim);
+        }
+    } else {
+        /* en modo test no avanzamos frames */
+        if (g_ms >= 1000) g_ms = 0;
+    }
+}
+
+/* UART RX: cambia animación / modo al vuelo (no bloquea) */
+ISR(USART_RX_vect) {
+    uint8_t c = UDR0;
+    switch (c) {
+        case '1': g_mode = MODE_ANIM; g_anim = 1; g_frame = 0; g_ms = 0; break;
+        case '2': g_mode = MODE_ANIM; g_anim = 2; g_frame = 0; g_ms = 0; break;
+        case 'r': case 'R': g_mode = MODE_TEST_SOLID;  break;
+        case 'g': case 'G': g_mode = MODE_TEST_CHECKER; break;
+        case 'b': case 'B': g_mode = MODE_TEST_BORDER;  break;
+        case 'h': case 'H':
+            /* opcional: enviar ayuda (no imprescindible) */
+            /* UDR0 = '>';  // evitar prints largos en ISR */
+            break;
+        default: break;
+    }
+}
+
+/* =================== Inicialización =================== */
+static void uart_init(void) {
+    UBRR0H = (uint8_t)(UBRR_VALUE >> 8);
+    UBRR0L = (uint8_t)(UBRR_VALUE & 0xFF);
+    UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);        /* 8N1 */
+    UCSR0B = (1<<RXEN0) | (1<<TXEN0) | (1<<RXCIE0);
+}
+
+static void timer2_init(void) {
+    /* CTC a ~1 kHz: con F_CPU=16MHz, prescaler 64 => 250kHz, OCR2A=249 => 1000 Hz */
+    TCCR2A = (1<<WGM21);
+    TCCR2B = (1<<CS22);           /* prescaler 64 (CS22=1, CS21=0, CS20=0) */
+    OCR2A  = 249;
+    TIMSK2 = (1<<OCIE2A);
+}
+
+/* Configuración de pines */
+static void gpio_init(void) {
+    /* Filas como salida */
+    DDRD |= ROW_MASK_PORTD;
+    DDRB |= ROW_MASK_PORTB;
+
+    /* Columnas como salida */
+    DDRB |= COL_MASK_PORTB;
+    DDRC |= COL_MASK_PORTC;
+
+    /* Estado inicial: filas y columnas apagadas */
+    rows_all_off();
+
+#if COL_ACTIVE_HIGH
+    PORTB &= ~COL_MASK_PORTB;
+    PORTC &= ~COL_MASK_PORTC;
+#else
+    PORTB |= COL_MASK_PORTB;
+    PORTC |= COL_MASK_PORTC;
+#endif
+}
+
+/* =================== Main =================== */
+int main(void) {
+    cli();
+    gpio_init();
+    uart_init();
+    timer2_init();
+    sei();
+
+    /* Loop vacío: todo lo hace Timer2 + RX ISR. No bloquea. */
+    for (;;) {
+        /* Podrías agregar aquí lógica adicional no crítica (telemetría, etc.). */
+    }
+}
