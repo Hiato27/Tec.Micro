@@ -1,14 +1,10 @@
-#ifndef F_CPU
-#define F_CPU 16000000UL
-#endif
-
 #include <avr/io.h>
 #include <util/delay.h>
 #include <avr/interrupt.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include <stdio.h>
+#include <stdbool.h>  // Añadir esta línea para usar 'bool', 'true' y 'false'
 
-//Definición de pines 
+// Definición de pines
 #define LED_PORT     PORTD
 #define LED_DDR      DDRD
 #define LED_PIN      PD2               // Datos WS2812B
@@ -38,214 +34,207 @@ static uint8_t col_azul  = 0;
 
 static uint16_t sem_azar = 0xACE1u;
 
-
 static uint16_t azar16(void){
-    uint16_t bit = ((sem_azar >> 0u) ^ (sem_azar >> 2u) ^
-                    (sem_azar >> 3u) ^ (sem_azar >> 5u)) & 1u;
-    sem_azar = (sem_azar >> 1u) | (bit << 15u);
-    return sem_azar;
+	uint16_t bit = ((sem_azar >> 0u) ^ (sem_azar >> 2u) ^
+	(sem_azar >> 3u) ^ (sem_azar >> 5u)) & 1u;
+	sem_azar = (sem_azar >> 1u) | (bit << 15u);
+	return sem_azar;
 }
 
 // Generar color nuevo aleatorio (evitar negro total)
 static void color_aleatorio(void){
-    uint16_t r = azar16();
-    uint16_t g = azar16();
-    uint16_t b = azar16();
+	uint16_t r = azar16();
+	uint16_t g = azar16();
+	uint16_t b = azar16();
 
-    col_rojo  = (uint8_t)(r & 0xFF);
-    col_verde = (uint8_t)(g & 0xFF);
-    col_azul  = (uint8_t)(b & 0xFF);
+	col_rojo  = (uint8_t)(r & 0xFF);
+	col_verde = (uint8_t)(g & 0xFF);
+	col_azul  = (uint8_t)(b & 0xFF);
 
-    if(col_rojo < 20 && col_verde < 20 && col_azul < 20){
-        col_rojo += 40;
-    }
+	if(col_rojo < 20 && col_verde < 20 && col_azul < 20){
+		col_rojo += 40;
+	}
 }
 
 static uint8_t idx_xy(uint8_t x, uint8_t y){
-    return (y * ANCHO) + x;
+	return (y * ANCHO) + x;
 }
-
 
 static void actualizar_buf(void){
-    // Apagar todo
-    for(uint8_t i=0; i<N_LEDS; i++){
-        matriz_rgb[i][0] = 0;
-        matriz_rgb[i][1] = 0; 
-        matriz_rgb[i][2] = 0; 
-    }
+	// Apagar todo
+	for(uint8_t i=0; i<N_LEDS; i++){
+		matriz_rgb[i][0] = 0;
+		matriz_rgb[i][1] = 0;
+		matriz_rgb[i][2] = 0;
+	}
 
-    // Encender solo el LED activo
-    uint8_t idx = idx_xy(pos_x, pos_y);
-    matriz_rgb[idx][0] = col_verde; 
-    matriz_rgb[idx][1] = col_rojo;
-    matriz_rgb[idx][2] = col_azul;
+	// Encender solo el LED activo
+	uint8_t idx = idx_xy(pos_x, pos_y);
+	matriz_rgb[idx][0] = col_verde;
+	matriz_rgb[idx][1] = col_rojo;
+	matriz_rgb[idx][2] = col_azul;
 }
 
-static inline void enviar_bit(uint8_t bit_val){
-    if(bit_val){
-        LED_PORT |=  LED_MASK;
-        __asm__ __volatile__ (
-            "nop\n\t""nop\n\t""nop\n\t""nop\n\t"
-            "nop\n\t""nop\n\t""nop\n\t""nop\n\t"
-            "nop\n\t""nop\n\t"
-        );
-        LED_PORT &= ~LED_MASK;
-        __asm__ __volatile__ (
-            "nop\n\t""nop\n\t""nop\n\t""nop\n\t"
-            "nop\n\t"
-        );
-    } else {
-        LED_PORT |=  LED_MASK;
-        __asm__ __volatile__ (
-            "nop\n\t""nop\n\t""nop\n\t""nop\n\t"
-        );
-        LED_PORT &= ~LED_MASK;
-        __asm__ __volatile__ (
-            "nop\n\t""nop\n\t""nop\n\t""nop\n\t"
-            "nop\n\t""nop\n\t""nop\n\t""nop\n\t"
-            "nop\n\t""nop\n\t"
-        );
-    }
+// Funciones UART
+void uart_init(void);
+void uart_transmit(unsigned char data);
+unsigned char uart_receive(void);
+void uart_print(const char* str);
+void uart_tx(char c);
+
+void uart_init(void) {
+	unsigned int ubrr = F_CPU/16/9600-1; // Configuración para 9600 baudios
+	UBRR0H = (unsigned char)(ubrr>>8);
+	UBRR0L = (unsigned char)ubrr;
+	UCSR0B = (1<<RXEN0) | (1<<TXEN0); // Habilitar receptor y transmisor
+	UCSR0C = (1<<UCSZ01) | (1<<UCSZ00); // 8 bits de datos
 }
 
-static inline void enviar_byte(uint8_t dato){
-    for(uint8_t i=0; i<8; i++){
-        enviar_bit(dato & (1<<(7-i)));
-    }
+void uart_transmit(unsigned char data) {
+	while (!(UCSR0A & (1<<UDRE0))) {
+		// Espera hasta que el buffer esté listo para recibir datos
+	}
+	UDR0 = data;
 }
 
-static void enviar_matriz(void){
-    cli();
-
-    for(uint8_t i=0; i<N_LEDS; i++){
-        enviar_byte(matriz_rgb[i][0]); 
-        enviar_byte(matriz_rgb[i][1]); 
-        enviar_byte(matriz_rgb[i][2]); 
-    }
-
-    sei();
-    _delay_us(60); 
+unsigned char uart_receive(void) {
+	while (!(UCSR0A & (1<<RXC0))) {
+		// Espera hasta recibir el dato
+	}
+	return UDR0;
 }
 
-
-// ADC
-static void adc_init(void){
-    ADMUX  = (1<<REFS0);
-    ADCSRA = (1<<ADEN) | (1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0);
+void uart_print(const char* str) {
+	while (*str) {
+		uart_transmit(*str++);
+	}
 }
 
-static uint16_t adc_leer(uint8_t canal){
-    ADMUX = (ADMUX & 0xF0) | (canal & 0x0F); 
-    ADCSRA |= (1<<ADSC);                     
-    while(ADCSRA & (1<<ADSC)){;}             
-    return ADC;                             
+void uart_tx(char c) {
+	uart_transmit(c);
 }
 
-static void leer_joy(int8_t *mov_x, int8_t *mov_y){
-    uint16_t val_x = adc_leer(1); // A1
-    uint16_t val_y = adc_leer(0); // A0
-
-    int16_t crudo_x = 0;
-    int16_t crudo_y = 0;
-
-    // Eje X
-    if(val_x > (ADC_MEDIO + ZONA_MUERTA)) crudo_x = +1;
-    else if(val_x < (ADC_MEDIO - ZONA_MUERTA)) crudo_x = -1;
-    else crudo_x = 0;
-
-    // Eje Y
-    if(val_y > (ADC_MEDIO + ZONA_MUERTA)) crudo_y = -1; 
-    else if(val_y < (ADC_MEDIO - ZONA_MUERTA)) crudo_y = +1; 
-    else crudo_y = 0;
-
-    int16_t ax = (crudo_x<0)? -crudo_x : crudo_x;
-    int16_t ay = (crudo_y<0)? -crudo_y : crudo_y;
-
-    int8_t dx = 0;
-    int8_t dy = 0;
-
-    if(ax > ay){
-        dx = (crudo_x>0)? +1 : (crudo_x<0? -1:0);
-        dy = 0;
-    }else if(ay > ax){
-        dy = (crudo_y>0)? +1 : (crudo_y<0? -1:0);
-        dx = 0;
-    }else{
-        dx = 0;
-        dy = 0;
-    }
-
-    *mov_x = dx;
-    *mov_y = dy;
+// Funciones WS2812
+void ws2812_send_byte(uint8_t byte) {
+	for(uint8_t i = 0; i < 8; i++) {
+		if(byte & (1 << (7 - i))) {
+			LED_PORT |= LED_MASK;  // HIGH
+			_delay_us(0.8);
+			LED_PORT &= ~LED_MASK; // LOW
+			_delay_us(0.4);
+			} else {
+			LED_PORT |= LED_MASK;  // HIGH
+			_delay_us(0.4);
+			LED_PORT &= ~LED_MASK; // LOW
+			_delay_us(0.8);
+		}
+	}
 }
 
-static bool boton_apretado(void){
-    return ( (BTN_PINREG & (1<<BTN_PIN)) == 0 );
+void ws2812_update(void) {
+	for(uint8_t i = 0; i < N_LEDS; i++) {
+		ws2812_send_byte(matriz_rgb[i][0]);  // Enviar verde
+		ws2812_send_byte(matriz_rgb[i][1]);  // Enviar rojo
+		ws2812_send_byte(matriz_rgb[i][2]);  // Enviar azul
+	}
+	_delay_us(60);  // Tiempo de reset de la señal
 }
 
+void ws2812_set_color(uint8_t led_num, uint8_t r, uint8_t g, uint8_t b) {
+	matriz_rgb[led_num][0] = g;
+	matriz_rgb[led_num][1] = r;
+	matriz_rgb[led_num][2] = b;
+}
 
-int main(void){
-    LED_DDR  |= LED_MASK;
-    LED_PORT &= ~LED_MASK;
+void ws2812_set_all(uint8_t r, uint8_t g, uint8_t b) {
+	for(uint8_t i = 0; i < N_LEDS; i++) {
+		ws2812_set_color(i, r, g, b);
+	}
+	ws2812_update();
+}
 
-    BTN_DDR  &= ~(1<<BTN_PIN); 
-    BTN_PORT |=  (1<<BTN_PIN);  
+void ws2812_clear(void) {
+	ws2812_set_all(0, 0, 0);  // Apagar todos los LEDs
+	ws2812_update();
+}
 
-    adc_init();
+// Funciones de Animaciones
+void show_animation(uint8_t anim_number) {
+	if (anim_number == 1) {
+		// Animación 1: Cara sonriente
+		for(uint8_t i = 0; i < N_LEDS; i++) {
+			ws2812_set_color(i, 255, 255, 0);  // Amarillo
+		}
+		ws2812_update();
+		_delay_ms(500);
+		} else if (anim_number == 2) {
+		// Animación 2: Corazón palpitante
+		for(uint8_t i = 0; i < N_LEDS; i++) {
+			ws2812_set_color(i, 255, 0, 0);  // Rojo
+		}
+		ws2812_update();
+		_delay_ms(500);
+	}
+}
 
-    pos_x      = 3;
-    pos_y      = 3;
-    col_rojo   = 255;
-    col_verde  = 0;
-    col_azul   = 0;
+void test_colors(void) {
+	ws2812_set_all(255, 0, 0);  // Rojo
+	ws2812_update();
+	_delay_ms(500);
+	ws2812_set_all(0, 255, 0);  // Verde
+	ws2812_update();
+	_delay_ms(500);
+	ws2812_set_all(0, 0, 255);  // Azul
+	ws2812_update();
+	_delay_ms(500);
+}
 
-    actualizar_buf();
-    enviar_matriz();
+int main(void) {
+	// Inicialización de pines
+	LED_DDR  |= LED_MASK;        // Configura el pin de datos como salida
+	LED_PORT &= ~LED_MASK;       // Inicializa el pin en bajo
 
-    bool btn_ant     = false;
-    bool listo_mover = true;   // 1 paso por inclinación
+	BTN_DDR  &= ~(1<<BTN_PIN);   // Configura el pin del botón como entrada
+	BTN_PORT |=  (1<<BTN_PIN);   // Activa la resistencia pull-up en el botón
 
-    while(1){
-        // Movimiento
-        int8_t mov_x, mov_y;
-        leer_joy(&mov_x, &mov_y);
+	uart_init();                 // Inicializa la UART
 
-        if(listo_mover){
-            if(mov_x != 0 || mov_y != 0){
-                int16_t nueva_x = (int16_t)pos_x + mov_x;
-                int16_t nueva_y = (int16_t)pos_y + mov_y;
+	pos_x      = 3;
+	pos_y      = 3;
+	col_rojo   = 255;
+	col_verde  = 0;
+	col_azul   = 0;
 
-                // Limites
-                if(nueva_x < 0) nueva_x = 0;
-                if(nueva_x > 7) nueva_x = 7;
-                if(nueva_y < 0) nueva_y = 0;
-                if(nueva_y > 7) nueva_y = 7;
+	actualizar_buf();
+	ws2812_update();
 
-                pos_x = (uint8_t)nueva_x;
-                pos_y = (uint8_t)nueva_y;
+	while (1) {
+		char c = uart_receive();  // Recibe comando de UART
 
-                actualizar_buf();
-                enviar_matriz();
-                listo_mover = false;
-            }
-        } else {
-            if(mov_x == 0 && mov_y == 0){
-                listo_mover = true;
-            }
-        }
+		if (c == '0') {
+			uart_print("Probando colores\r\n");
+			test_colors();  // Prueba de colores
+			} else if (c == '1') {
+			uart_print("Mostrando Animación 1\r\n");
+			show_animation(1);  // Animación 1
+			} else if (c == '2') {
+			uart_print("Mostrando Animación 2\r\n");
+			show_animation(2);  // Animación 2
+			} else {
+			uart_print("Comando no reconocido\r\n");
+		}
 
-        //Cambio de color
-        bool btn_ahora = boton_apretado();
-        if(btn_ahora && !btn_ant){
-            color_aleatorio();
-            actualizar_buf();
-            enviar_matriz();
-            _delay_ms(150);
-        }
-        btn_ant = btn_ahora;
+		// Verificar si se presiona el botón para cambiar color
+		bool btn_ahora = (BTN_PINREG & (1<<BTN_PIN)) == 0;  // Botón presionado si es LOW
+		if (btn_ahora) {
+			color_aleatorio();
+			actualizar_buf();
+			ws2812_update();
+			_delay_ms(150);  // Espera un poco para evitar rebotes
+		}
 
-        _delay_ms(20);
-    }
+		_delay_ms(20);  // Retardo para evitar un uso excesivo de CPU
+	}
 
-    return 0;
+	return 0;
 }
