@@ -1,235 +1,243 @@
+#ifndef F_CPU
 #define F_CPU 16000000UL
+#endif
+
 #include <avr/io.h>
+#include <util/delay.h>
 #include <avr/interrupt.h>
-#include <avr/pgmspace.h>
-#include <stdint.h>
+#include <stdio.h>
 
-/* =================== Config de niveles activos =================== */
-/* Ajustá estos dos según tu cableado/transistores: */
-#define ROW_ACTIVE_HIGH 1    /* 1: fila encendida = nivel alto en el pin de fila */
-#define COL_ACTIVE_HIGH 1    /* 1: columna encendida = nivel alto en el pin de columna */
+// Definiciones para los pines
+#define LED_PORT     PORTD
+#define LED_DDR      DDRD
+#define LED_PIN      PD2               // Datos WS2812B
+#define LED_MASK     (1<<LED_PIN)
 
-/* =================== UART =================== */
-#define BAUD 9600UL
-#define UBRR_VALUE ((F_CPU/(16UL*BAUD))-1)
+#define BTN_PINREG   PIND
+#define BTN_DDR      DDRD
+#define BTN_PORT     PORTD
+#define BTN_PIN      PD3               // Botón del joystick (activo en LOW)
 
-/* =================== Máscara de pines =================== */
-/* Columnas en B: PB4, PB5 */
-#define COL_MASK_PORTB ((1<<PB4)|(1<<PB5))
-/* Columnas en C: PC0..PC5 */
-#define COL_MASK_PORTC ((1<<PC0)|(1<<PC1)|(1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5))
-/* Filas en D: PD4..PD7 */
-#define ROW_MASK_PORTD ((1<<PD4)|(1<<PD5)|(1<<PD6)|(1<<PD7))
-/* Filas en B: PB0..PB3 */
-#define ROW_MASK_PORTB ((1<<PB0)|(1<<PB1)|(1<<PB2)|(1<<PB3))
+#define ADC_MEDIO     512
+#define ZONA_MUERTA   80
 
-/* =================== Estado global =================== */
-typedef enum { MODE_ANIM=0, MODE_TEST_SOLID, MODE_TEST_CHECKER, MODE_TEST_BORDER } mode_t;
-volatile mode_t g_mode = MODE_ANIM;
-volatile uint8_t g_anim = 1;          /* 1 o 2 */
-volatile uint8_t g_frame = 0;         /* índice del frame actual */
-volatile uint16_t g_ms = 0;           /* contador de milisegundos (aprox) */
+#define ANCHO         8
+#define ALTO          8
+#define N_LEDS       (ANCHO*ALTO)
 
-/* =================== Frames (en PROGMEM) ===================
- * Cada frame es 8 bytes (fila 0..7). bit0->C1 ... bit7->C8.
- * Usamos figuras simétricas para que no importe si C1 está a la izquierda o derecha.
- */
+static uint8_t matriz_rgb[N_LEDS][3];
 
-/* Animación 1: Smiley que parpadea (2 frames) */
-#define ANIM1_FRAMES 2
-const uint8_t anim1_frames[ANIM1_FRAMES][8] PROGMEM = {
-    /* Smiley ojos abiertos */
-    { 0x3C, 0x42, 0xA5, 0x81, 0xA1, 0x99, 0x42, 0x3C },
-    /* Smiley ojos cerrados */
-    { 0x3C, 0x42, 0x81, 0x81, 0xA1, 0x99, 0x42, 0x3C }
-};
+static uint8_t pos_x = 3;
+static uint8_t pos_y = 3;
 
-/* Animación 2: Corazón que late (3 frames) */
-#define ANIM2_FRAMES 3
-const uint8_t anim2_frames[ANIM2_FRAMES][8] PROGMEM = {
-    /* pequeño */
-    { 0x00, 0x66, 0xFF, 0xFF, 0x7E, 0x3C, 0x18, 0x00 },
-    /* mediano */
-    { 0x18, 0x7E, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x18 },
-    /* grande */
-    { 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C }
-};
+// Color actual del píxel encendido
+static uint8_t col_rojo  = 255;
+static uint8_t col_verde = 0;
+static uint8_t col_azul  = 0;
 
-/* Velocidad de animación (ms por frame aprox) */
-#define ANIM1_DT_MS 160
-#define ANIM2_DT_MS 120
+static uint16_t sem_azar = 0xACE1u;
 
-/* =================== Utilidades de bajo nivel =================== */
-
-/* Apaga TODAS las filas */
-static inline void rows_all_off(void) {
-#if ROW_ACTIVE_HIGH
-    PORTD &= ~ROW_MASK_PORTD;
-    PORTB &= ~ROW_MASK_PORTB;
-#else
-    PORTD |= ROW_MASK_PORTD;
-    PORTB |= ROW_MASK_PORTB;
-#endif
+static uint16_t azar16(void){
+    uint16_t bit = ((sem_azar >> 0u) ^ (sem_azar >> 2u) ^
+                    (sem_azar >> 3u) ^ (sem_azar >> 5u)) & 1u;
+    sem_azar = (sem_azar >> 1u) | (bit << 15u);
+    return sem_azar;
 }
 
-/* Enciende UNA fila por índice 0..7 (F1..F8) */
-static inline void row_on(uint8_t idx) {
-    if (idx < 4) {
-#if ROW_ACTIVE_HIGH
-        PORTD |= (1 << (PD4 + idx));
-#else
-        PORTD &= ~(1 << (PD4 + idx));
-#endif
-    } else {
-        uint8_t b = idx - 4;
-#if ROW_ACTIVE_HIGH
-        PORTB |= (1 << (PB0 + b));
-#else
-        PORTB &= ~(1 << (PB0 + b));
-#endif
+// Generar color nuevo aleatorio (evitar negro total)
+static void color_aleatorio(void){
+    uint16_t r = azar16();
+    uint16_t g = azar16();
+    uint16_t b = azar16();
+
+    col_rojo  = (uint8_t)(r & 0xFF);
+    col_verde = (uint8_t)(g & 0xFF);
+    col_azul  = (uint8_t)(b & 0xFF);
+
+    if(col_rojo < 20 && col_verde < 20 && col_azul < 20){
+        col_rojo += 40;
     }
 }
 
-/* Apaga/Enciende columnas según el byte de la fila */
-static inline void set_columns(uint8_t pattern) {
-    /* mapear bits del pattern a pines físicos */
-    uint8_t b_bits = 0;
-    uint8_t c_bits = 0;
-    if (pattern & (1<<0)) b_bits |= (1<<PB4); /* C1 */
-    if (pattern & (1<<1)) b_bits |= (1<<PB5); /* C2 */
-    if (pattern & (1<<2)) c_bits |= (1<<PC0); /* C3 */
-    if (pattern & (1<<3)) c_bits |= (1<<PC1); /* C4 */
-    if (pattern & (1<<4)) c_bits |= (1<<PC2); /* C5 */
-    if (pattern & (1<<5)) c_bits |= (1<<PC3); /* C6 */
-    if (pattern & (1<<6)) c_bits |= (1<<PC4); /* C7 */
-    if (pattern & (1<<7)) c_bits |= (1<<PC5); /* C8 */
-
-#if COL_ACTIVE_HIGH
-    PORTB = (PORTB & ~COL_MASK_PORTB) | b_bits;
-    PORTC = (PORTC & ~COL_MASK_PORTC) | c_bits;
-#else
-    PORTB = (PORTB & ~COL_MASK_PORTB) | ((~b_bits) & COL_MASK_PORTB);
-    PORTC = (PORTC & ~COL_MASK_PORTC) | ((~c_bits) & COL_MASK_PORTC);
-#endif
+static uint8_t idx_xy(uint8_t x, uint8_t y){
+    return (y * ANCHO) + x;
 }
 
-/* Lee un byte (fila) del frame activo (desde PROGMEM) */
-static inline uint8_t fetch_row(uint8_t anim, uint8_t frame, uint8_t row) {
-    if (g_mode != MODE_ANIM) {
-        /* patrones de prueba */
-        if (g_mode == MODE_TEST_SOLID) {
-            return 0xFF;
-        } else if (g_mode == MODE_TEST_CHECKER) {
-            return (row & 1) ? 0xAA : 0x55;
-        } else { /* MODE_TEST_BORDER */
-            if (row == 0 || row == 7) return 0xFF;
-            return 0x81;
+static void actualizar_buf(void){
+    // Apagar todo
+    for(uint8_t i=0; i<N_LEDS; i++){
+        matriz_rgb[i][0] = 0;
+        matriz_rgb[i][1] = 0; 
+        matriz_rgb[i][2] = 0; 
+    }
+
+    // Encender solo el LED activo
+    uint8_t idx = idx_xy(pos_x, pos_y);
+    matriz_rgb[idx][0] = col_verde; 
+    matriz_rgb[idx][1] = col_rojo;
+    matriz_rgb[idx][2] = col_azul;
+}
+
+// Funciones UART
+void uart_init(void);
+void uart_transmit(unsigned char data);
+unsigned char uart_receive(void);
+void uart_print(const char* str);
+void uart_tx(char c);
+
+void uart_init(void) {
+    unsigned int ubrr = F_CPU/16/9600-1; // Configuración para 9600 baudios
+    UBRR0H = (unsigned char)(ubrr>>8);
+    UBRR0L = (unsigned char)ubrr;
+    UCSR0B = (1<<RXEN0) | (1<<TXEN0); // Habilitar receptor y transmisor
+    UCSR0C = (1<<UCSZ01) | (1<<UCSZ00); // 8 bits de datos
+}
+
+void uart_transmit(unsigned char data) {
+    while (!(UCSR0A & (1<<UDRE0))) {
+        // Espera hasta que el buffer esté listo para recibir datos
+    }
+    UDR0 = data;
+}
+
+unsigned char uart_receive(void) {
+    while (!(UCSR0A & (1<<RXC0))) {
+        // Espera hasta recibir el dato
+    }
+    return UDR0;
+}
+
+void uart_print(const char* str) {
+    while (*str) {
+        uart_transmit(*str++);
+    }
+}
+
+void uart_tx(char c) {
+    uart_transmit(c);
+}
+
+// Funciones WS2812
+void ws2812_send_byte(uint8_t byte) {
+    for(uint8_t i = 0; i < 8; i++) {
+        if(byte & (1 << (7 - i))) {
+            LED_PORT |= LED_MASK;  // HIGH
+            _delay_us(0.8);
+            LED_PORT &= ~LED_MASK; // LOW
+            _delay_us(0.4);
+        } else {
+            LED_PORT |= LED_MASK;  // HIGH
+            _delay_us(0.4);
+            LED_PORT &= ~LED_MASK; // LOW
+            _delay_us(0.8);
         }
     }
-    if (anim == 1) {
-        return pgm_read_byte(&anim1_frames[frame % ANIM1_FRAMES][row]);
-    } else {
-        return pgm_read_byte(&anim2_frames[frame % ANIM2_FRAMES][row]);
+}
+
+void ws2812_update(void) {
+    for(uint8_t i = 0; i < N_LEDS; i++) {
+        ws2812_send_byte(matriz_rgb[i][0]);  // Enviar verde
+        ws2812_send_byte(matriz_rgb[i][1]);  // Enviar rojo
+        ws2812_send_byte(matriz_rgb[i][2]);  // Enviar azul
     }
+    _delay_us(60);  // Tiempo de reset de la señal
 }
 
-static inline uint16_t frame_dt_ms(uint8_t anim) {
-    return (anim == 1) ? ANIM1_DT_MS : ANIM2_DT_MS;
+void ws2812_set_color(uint8_t led_num, uint8_t r, uint8_t g, uint8_t b) {
+    matriz_rgb[led_num][0] = g;
+    matriz_rgb[led_num][1] = r;
+    matriz_rgb[led_num][2] = b;
 }
 
-static inline uint8_t frames_count(uint8_t anim) {
-    return (anim == 1) ? ANIM1_FRAMES : ANIM2_FRAMES;
+void ws2812_set_all(uint8_t r, uint8_t g, uint8_t b) {
+    for(uint8_t i = 0; i < N_LEDS; i++) {
+        ws2812_set_color(i, r, g, b);
+    }
+    ws2812_update();
 }
 
-/* =================== ISRs =================== */
-/* Timer2: CTC a ~1 kHz -> multiplexado de filas y timebase de ms */
-ISR(TIMER2_COMPA_vect) {
-    static uint8_t row = 0;
-    /* apaga filas, escribe columnas de la fila actual y vuelve a encender esa fila */
-    rows_all_off();
-    uint8_t pat = fetch_row(g_anim, g_frame, row);
-    set_columns(pat);
-    row_on(row);
+void ws2812_clear(void) {
+    ws2812_set_all(0, 0, 0);  // Apagar todos los LEDs
+    ws2812_update();
+}
 
-    row = (row + 1) & 0x07;  /* 0..7 */
-    g_ms++;                  /* ~1 ms por tick */
-    /* cambiar frame cuando toque */
-    if (g_mode == MODE_ANIM) {
-        if (g_ms >= frame_dt_ms(g_anim)) {
-            g_ms = 0;
-            g_frame = (g_frame + 1) % frames_count(g_anim);
+// Funciones de Animaciones
+void show_animation(uint8_t anim_number) {
+    if (anim_number == 1) {
+        // Animación 1: Cara sonriente
+        for(uint8_t i = 0; i < N_LEDS; i++) {
+            ws2812_set_color(i, 255, 255, 0);  // Amarillo
         }
-    } else {
-        /* en modo test no avanzamos frames */
-        if (g_ms >= 1000) g_ms = 0;
+        ws2812_update();
+        _delay_ms(500);
+    } else if (anim_number == 2) {
+        // Animación 2: Corazón palpitante
+        for(uint8_t i = 0; i < N_LEDS; i++) {
+            ws2812_set_color(i, 255, 0, 0);  // Rojo
+        }
+        ws2812_update();
+        _delay_ms(500);
     }
 }
 
-/* UART RX: cambia animación / modo al vuelo (no bloquea) */
-ISR(USART_RX_vect) {
-    uint8_t c = UDR0;
-    switch (c) {
-        case '1': g_mode = MODE_ANIM; g_anim = 1; g_frame = 0; g_ms = 0; break;
-        case '2': g_mode = MODE_ANIM; g_anim = 2; g_frame = 0; g_ms = 0; break;
-        case 'r': case 'R': g_mode = MODE_TEST_SOLID;  break;
-        case 'g': case 'G': g_mode = MODE_TEST_CHECKER; break;
-        case 'b': case 'B': g_mode = MODE_TEST_BORDER;  break;
-        case 'h': case 'H':
-            /* opcional: enviar ayuda (no imprescindible) */
-            /* UDR0 = '>';  // evitar prints largos en ISR */
-            break;
-        default: break;
-    }
+void test_colors(void) {
+    ws2812_set_all(255, 0, 0);  // Rojo
+    ws2812_update();
+    _delay_ms(500);
+    ws2812_set_all(0, 255, 0);  // Verde
+    ws2812_update();
+    _delay_ms(500);
+    ws2812_set_all(0, 0, 255);  // Azul
+    ws2812_update();
+    _delay_ms(500);
 }
 
-/* =================== Inicialización =================== */
-static void uart_init(void) {
-    UBRR0H = (uint8_t)(UBRR_VALUE >> 8);
-    UBRR0L = (uint8_t)(UBRR_VALUE & 0xFF);
-    UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);        /* 8N1 */
-    UCSR0B = (1<<RXEN0) | (1<<TXEN0) | (1<<RXCIE0);
-}
-
-static void timer2_init(void) {
-    /* CTC a ~1 kHz: con F_CPU=16MHz, prescaler 64 => 250kHz, OCR2A=249 => 1000 Hz */
-    TCCR2A = (1<<WGM21);
-    TCCR2B = (1<<CS22);           /* prescaler 64 (CS22=1, CS21=0, CS20=0) */
-    OCR2A  = 249;
-    TIMSK2 = (1<<OCIE2A);
-}
-
-/* Configuración de pines */
-static void gpio_init(void) {
-    /* Filas como salida */
-    DDRD |= ROW_MASK_PORTD;
-    DDRB |= ROW_MASK_PORTB;
-
-    /* Columnas como salida */
-    DDRB |= COL_MASK_PORTB;
-    DDRC |= COL_MASK_PORTC;
-
-    /* Estado inicial: filas y columnas apagadas */
-    rows_all_off();
-
-#if COL_ACTIVE_HIGH
-    PORTB &= ~COL_MASK_PORTB;
-    PORTC &= ~COL_MASK_PORTC;
-#else
-    PORTB |= COL_MASK_PORTB;
-    PORTC |= COL_MASK_PORTC;
-#endif
-}
-
-/* =================== Main =================== */
 int main(void) {
-    cli();
-    gpio_init();
-    uart_init();
-    timer2_init();
-    sei();
+    // Inicialización de pines
+    LED_DDR  |= LED_MASK;        // Configura el pin de datos como salida
+    LED_PORT &= ~LED_MASK;       // Inicializa el pin en bajo
 
-    /* Loop vacío: todo lo hace Timer2 + RX ISR. No bloquea. */
-    for (;;) {
-        /* Podrías agregar aquí lógica adicional no crítica (telemetría, etc.). */
+    BTN_DDR  &= ~(1<<BTN_PIN);   // Configura el pin del botón como entrada
+    BTN_PORT |=  (1<<BTN_PIN);   // Activa la resistencia pull-up en el botón
+
+    uart_init();                 // Inicializa la UART
+
+    pos_x      = 3;
+    pos_y      = 3;
+    col_rojo   = 255;
+    col_verde  = 0;
+    col_azul   = 0;
+
+    actualizar_buf();
+    ws2812_update();
+
+    while (1) {
+        char c = uart_receive();  // Recibe comando de UART
+
+        if (c == '0') {
+            uart_print("Probando colores\r\n");
+            test_colors();  // Prueba de colores
+        } else if (c == '1') {
+            uart_print("Mostrando Animación 1\r\n");
+            show_animation(1);  // Animación 1
+        } else if (c == '2') {
+            uart_print("Mostrando Animación 2\r\n");
+            show_animation(2);  // Animación 2
+        } else {
+            uart_print("Comando no reconocido\r\n");
+        }
+
+        // Verificar si se presiona el botón para cambiar color
+        bool btn_ahora = (BTN_PINREG & (1<<BTN_PIN)) == 0;  // Botón presionado si es LOW
+        if (btn_ahora) {
+            color_aleatorio();
+            actualizar_buf();
+            ws2812_update();
+            _delay_ms(150);  // Espera un poco para evitar rebotes
+        }
+
+        _delay_ms(20);  // Retardo para evitar un uso excesivo de CPU
     }
+
+    return 0;
 }
