@@ -12,7 +12,7 @@
 // Definiciones de Hardware 
 #define LED_PORT     PORTD
 #define LED_DDR      DDRD
-#define LED_PIN      PD2              // Pin para los datos del WS2812B
+#define LED_PIN      PD2              
 #define LED_MASK     (1<<LED_PIN)
 
 #define ANCHO        8
@@ -20,10 +20,10 @@
 #define N_LEDS       (ANCHO*ALTO)
 
 // Ritmo más rápido para el efecto de parpadeo del rayo
-#define RITMO_ANIMACION_LENTO 100 // Para árbol y test (ritmo normal)
-#define RITMO_ANIMACION_RAYO  20  // Ritmo más rápido para destello/lluvia del rayo
+#define RITMO_ANIMACION_LENTO 100
+#define RITMO_ANIMACION_RAYO  20 
 
-// CONSTANTES DE TAMAÑO CORREGIDAS
+// Constantes de tamaño
 #define NUM_FRAMES_ARBOL 2
 #define NUM_FRAMES_TORMENTA 4
 
@@ -31,7 +31,7 @@
 // Variables de Estado Globales 
 static uint8_t matriz_rgb[N_LEDS][3];
 
-// ESTADO INICIAL: '3' (Apagar matriz)
+// Estado inicial: '3' (Apagar matriz)
 volatile uint8_t animacion_actual = '3';
 
 volatile uint8_t frame_actual = 0;
@@ -40,11 +40,11 @@ volatile uint16_t contador_frames = 0;
 
 // Funciones Auxiliares 
 static uint8_t idx_xy(uint8_t x, uint8_t y){
-	// Se asume que los LEDs se ordenan por fila (y) y luego por columna (x)
+	
 	return (y * ANCHO) + x;
 }
 
-// Funciones WS2812 (Se mantienen sin cambios) 
+// Funciones del WS2812 
 
 void ws2812_init(void) {
 	LED_DDR |= (1 << LED_PIN);
@@ -84,10 +84,10 @@ void ws2812_send_byte(uint8_t byte) {
 void ws2812_update(void) {
 	cli();
 	for(uint8_t i = 0; i < N_LEDS; i++) {
-		// Se envían los datos en el orden GRB (verde, rojo, azul)
-		ws2812_send_byte(matriz_rgb[i][0]); // Green
-		ws2812_send_byte(matriz_rgb[i][1]); // Red
-		ws2812_send_byte(matriz_rgb[i][2]); // Blue
+		
+		ws2812_send_byte(matriz_rgb[i][0]); 
+		ws2812_send_byte(matriz_rgb[i][1]); 
+		ws2812_send_byte(matriz_rgb[i][2]); 
 	}
 	sei();
 	_delay_us(60); 
@@ -147,7 +147,7 @@ ISR(USART_RX_vect) {
 		uart_print("Comando recibido: ");
 		if (recibido == '0') uart_print("Test de Colores\r\n");
 		else if (recibido == '1') uart_print("Animacion 1 (Arbol de Navidad GRANDE)\r\n");
-		else if (recibido == '2') uart_print("Animacion 2 (TORMENTA: NUBE, RAYO Y LLUVIA)\r\n"); // Actualizado
+		else if (recibido == '2') uart_print("Animacion 2 (TORMENTA: NUBE, RAYO Y LLUVIA)\r\n"); 
 		else if (recibido == '3') uart_print("Apagar\r\n");
 		} else {
 		uart_print("Comando no reconocido\r\n");
