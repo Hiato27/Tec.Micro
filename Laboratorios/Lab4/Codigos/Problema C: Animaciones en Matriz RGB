@@ -7,28 +7,29 @@
 #include <avr/interrupt.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <avr/pgmspace.h> 
+#include <avr/pgmspace.h>
 
-// Definiciones de Hardware 
-#define LED_PORT     PORTD
-#define LED_DDR      DDRD
-#define LED_PIN      PD2              
-#define LED_MASK     (1<<LED_PIN)
+// Definiciones de pines
+#define LED_PORT      PORTD
+#define LED_DDR       DDRD
+#define LED_PIN       PD2
+#define LED_MASK      (1<<LED_PIN)
 
-#define ANCHO        8
-#define ALTO         8
-#define N_LEDS       (ANCHO*ALTO)
+#define ANCHO         8
+#define ALTO          8
+#define N_LEDS        (ANCHO*ALTO)
 
-// Ritmo más rápido para el efecto de parpadeo del rayo
+
 #define RITMO_ANIMACION_LENTO 100
-#define RITMO_ANIMACION_RAYO  20 
-
-// Constantes de tamaño
-#define NUM_FRAMES_ARBOL 2
-#define NUM_FRAMES_TORMENTA 4
+#define RITMO_ANIMACION_RAYO  20
 
 
-// Variables de Estado Globales 
+#define NUM_FRAMES_ARBOL 4
+#define NUM_FRAMES_LLUVIA 4        
+#define NUM_FRAMES_RAYO 8           
+
+
+
 static uint8_t matriz_rgb[N_LEDS][3];
 
 // Estado inicial: '3' (Apagar matriz)
@@ -38,13 +39,13 @@ volatile uint8_t frame_actual = 0;
 volatile uint16_t contador_frames = 0;
 
 
-// Funciones Auxiliares 
+
 static uint8_t idx_xy(uint8_t x, uint8_t y){
 	
 	return (y * ANCHO) + x;
 }
 
-// Funciones del WS2812 
+// Funciones del WS2812
 
 void ws2812_init(void) {
 	LED_DDR |= (1 << LED_PIN);
@@ -56,23 +57,23 @@ void ws2812_send_byte(uint8_t byte) {
 	for(uint8_t i = 0; i < 8; i++) {
 		if(byte & (1 << (7 - i))) {
 			
-			LED_PORT |= LED_MASK;  
+			LED_PORT |= LED_MASK;
 			asm volatile (
 			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
 			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
 			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
 			::);
-			LED_PORT &= ~LED_MASK; 
+			LED_PORT &= ~LED_MASK;
 			asm volatile (
 			"nop\n\t" "nop\n\t"
 			::);
 			} else {
 			
-			LED_PORT |= LED_MASK;  
+			LED_PORT |= LED_MASK;
 			asm volatile (
 			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
 			::);
-			LED_PORT &= ~LED_MASK; 
+			LED_PORT &= ~LED_MASK;
 			asm volatile (
 			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
 			"nop\n\t" "nop\n\t" "nop\n\t" "nop\n\t"
@@ -85,19 +86,19 @@ void ws2812_update(void) {
 	cli();
 	for(uint8_t i = 0; i < N_LEDS; i++) {
 		
-		ws2812_send_byte(matriz_rgb[i][0]); 
-		ws2812_send_byte(matriz_rgb[i][1]); 
-		ws2812_send_byte(matriz_rgb[i][2]); 
+		ws2812_send_byte(matriz_rgb[i][0]);
+		ws2812_send_byte(matriz_rgb[i][1]);
+		ws2812_send_byte(matriz_rgb[i][2]);
 	}
 	sei();
-	_delay_us(60); 
+	_delay_us(60);
 }
 
 void ws2812_set_color(uint8_t led_num, uint8_t r, uint8_t g, uint8_t b) {
 	
-	matriz_rgb[led_num][0] = g; 
-	matriz_rgb[led_num][1] = r; 
-	matriz_rgb[led_num][2] = b; 
+	matriz_rgb[led_num][0] = g;
+	matriz_rgb[led_num][1] = r;
+	matriz_rgb[led_num][2] = b;
 }
 
 void ws2812_set_all(uint8_t r, uint8_t g, uint8_t b) {
@@ -109,7 +110,7 @@ void ws2812_set_all(uint8_t r, uint8_t g, uint8_t b) {
 
 void copiar_frame(const uint8_t frame[N_LEDS][3]) {
 	for(uint8_t i = 0; i < N_LEDS; i++) {
-	
+		
 		uint8_t r = pgm_read_byte(&frame[i][0]);
 		uint8_t g = pgm_read_byte(&frame[i][1]);
 		uint8_t b = pgm_read_byte(&frame[i][2]);
@@ -117,7 +118,7 @@ void copiar_frame(const uint8_t frame[N_LEDS][3]) {
 	}
 }
 
-// Funciones UART 
+// Funciones UART
 
 void uart_print(const char* str) {
 	while (*str) {
@@ -147,18 +148,24 @@ ISR(USART_RX_vect) {
 		uart_print("Comando recibido: ");
 		if (recibido == '0') uart_print("Test de Colores\r\n");
 		else if (recibido == '1') uart_print("Animacion 1 (Arbol de Navidad GRANDE)\r\n");
-		else if (recibido == '2') uart_print("Animacion 2 (TORMENTA: NUBE, RAYO Y LLUVIA)\r\n"); 
+		else if (recibido == '2') uart_print("Animacion 2 (TORMENTA: NUBE, RAYO Y LLUVIA)\r\n");
 		else if (recibido == '3') uart_print("Apagar\r\n");
 		} else {
 		uart_print("Comando no reconocido\r\n");
 	}
 }
 
-//  Definicones del arbol de navidad con las luces 
 
 
-#define R_LUCES_1 255, 0, 0
-#define G_LUCES_2 0, 255, 0
+// Definiciones de los colores de las luces del árbol
+#define C_ROJO    255, 0, 0
+#define C_VERDE   0, 255, 0
+#define C_AZUL    0, 0, 255
+#define C_AMARILLO 255, 255, 0
+#define C_MAGENTA 255, 0, 255
+#define C_CYAN    0, 255, 255
+
+
 #define B_FONDO   0, 0, 30
 #define T_TRONCO  100, 50, 0
 #define ARBOL_VERDE 0, 150, 0
@@ -166,35 +173,63 @@ ISR(USART_RX_vect) {
 
 
 const uint8_t ARBOL_BASE[N_LEDS][3] PROGMEM = {
-	{B_FONDO}, {B_FONDO}, {B_FONDO}, {ESTRELLA_AMARILLA}, {B_FONDO}, {B_FONDO}, {B_FONDO}, {B_FONDO}, 
-	{B_FONDO}, {B_FONDO}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, {B_FONDO}, {B_FONDO}, 
-	{B_FONDO}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, {B_FONDO}, 
-	{B_FONDO}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, {B_FONDO}, 
-	{ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, 
-	{ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, 
-	{B_FONDO}, {B_FONDO}, {T_TRONCO}, {T_TRONCO}, {T_TRONCO}, {B_FONDO}, {B_FONDO}, {B_FONDO}, 
-	{B_FONDO}, {B_FONDO}, {T_TRONCO}, {T_TRONCO}, {T_TRONCO}, {B_FONDO}, {B_FONDO}, {B_FONDO}  
+	{B_FONDO}, {B_FONDO}, {B_FONDO}, {ESTRELLA_AMARILLA}, {B_FONDO}, {B_FONDO}, {B_FONDO}, {B_FONDO},
+	{B_FONDO}, {B_FONDO}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, {B_FONDO}, {B_FONDO},
+	{B_FONDO}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, {B_FONDO},
+	{B_FONDO}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO}, {B_FONDO},
+	{ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO},
+	{ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {ARBOL_VERDE}, {B_FONDO},
+	{B_FONDO}, {B_FONDO}, {T_TRONCO}, {T_TRONCO}, {T_TRONCO}, {B_FONDO}, {B_FONDO}, {B_FONDO},
+	{B_FONDO}, {B_FONDO}, {T_TRONCO}, {T_TRONCO}, {T_TRONCO}, {B_FONDO}, {B_FONDO}, {B_FONDO}
 };
 
 
+// Frames de las luces de colores
+
+// Frame 1: Rojo y Azul
 const uint8_t LUCES_FRAME1[N_LEDS][3] PROGMEM = {
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {R_LUCES_1}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {R_LUCES_1}, {0,0,0}, {0,0,0}, {0,0,0}, {R_LUCES_1}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {0,0,0}, {R_LUCES_1}, {0,0,0}, {R_LUCES_1}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{R_LUCES_1}, {0,0,0}, {0,0,0}, {R_LUCES_1}, {0,0,0}, {0,0,0}, {R_LUCES_1}, {0,0,0}, 
+	{0,0,0}, {0,0,0}, {0,0,0}, {C_ROJO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {C_AZUL}, {0,0,0}, {0,0,0}, {0,0,0}, {C_ROJO}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {C_ROJO}, {0,0,0}, {C_AZUL}, {0,0,0}, {0,0,0}, {0,0,0},
+	{C_AZUL}, {0,0,0}, {0,0,0}, {C_ROJO}, {0,0,0}, {0,0,0}, {C_AZUL}, {0,0,0},
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
 };
 
+// Frame 2: Verde y Amarillo
 const uint8_t LUCES_FRAME2[N_LEDS][3] PROGMEM = {
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, 
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {G_LUCES_2}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {0,0,0}, {G_LUCES_2}, {0,0,0}, {G_LUCES_2}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {G_LUCES_2}, {0,0,0}, {G_LUCES_2}, {0,0,0}, {G_LUCES_2}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {G_LUCES_2}, {0,0,0}, {0,0,0}, {G_LUCES_2}, {0,0,0}, {0,0,0}, {0,0,0}, 
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {C_VERDE}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {C_AMARILLO}, {0,0,0}, {C_VERDE}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {C_VERDE}, {0,0,0}, {C_AMARILLO}, {0,0,0}, {C_VERDE}, {0,0,0}, {0,0,0},
+	{0,0,0}, {C_VERDE}, {0,0,0}, {0,0,0}, {C_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+// Frame 3: Magenta y Cyan
+const uint8_t LUCES_FRAME3[N_LEDS][3] PROGMEM = {
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {C_MAGENTA}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {C_CYAN}, {0,0,0}, {0,0,0}, {0,0,0}, {C_MAGENTA}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {C_MAGENTA}, {0,0,0}, {C_CYAN}, {0,0,0}, {0,0,0}, {0,0,0},
+	{C_CYAN}, {0,0,0}, {0,0,0}, {C_MAGENTA}, {0,0,0}, {0,0,0}, {C_CYAN}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+// Frame 4: Amarillo y Rojo (Patrón inverso)
+const uint8_t LUCES_FRAME4[N_LEDS][3] PROGMEM = {
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {C_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {C_ROJO}, {0,0,0}, {C_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {C_AMARILLO}, {0,0,0}, {C_ROJO}, {0,0,0}, {C_AMARILLO}, {0,0,0}, {0,0,0},
+	{0,0,0}, {C_AMARILLO}, {0,0,0}, {0,0,0}, {C_ROJO}, {0,0,0}, {0,0,0}, {0,0,0},
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
 	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
 };
@@ -221,55 +256,116 @@ void combinar_luces(const uint8_t luces_frame[N_LEDS][3]) {
 }
 
 
-//  Definiciones de la nube de tormenta electrica y lluvia
+//  Definiciones de la nube de tormenta eléctrica y la lluvia
 
 
-#define C_NUBE_AZUL     50, 50, 100    
-#define C_RAYO_AMARILLO 255, 255, 0    
-#define C_LLUVIA        50, 100, 200   
-#define C_FONDO_CLARO   0, 0, 0       
+#define C_NUBE_AZUL       50, 50, 100
+#define C_RAYO_AMARILLO 255, 255, 0
+#define C_LLUVIA        50, 100, 200
+#define C_FONDO_CLARO   0, 0, 0
 
 
 const uint8_t NUBE_BASE[N_LEDS][3] PROGMEM = {
-	{C_FONDO_CLARO}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, 
+	{C_FONDO_CLARO}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_FONDO_CLARO}, {C_FONDO_CLARO},
 	{C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL},
-	{C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, 
-	{C_FONDO_CLARO}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_FONDO_CLARO}, 
-	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, 
-	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, 
-	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, 
-	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}  
+	{C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL},
+	{C_FONDO_CLARO}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_NUBE_AZUL}, {C_FONDO_CLARO},
+	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO},
+	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO},
+	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO},
+	{C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}, {C_FONDO_CLARO}
+};
+
+// Frames del rayo para la caida y la desapación
+
+// Rayo apagado
+const uint8_t RAYO_F_OFF[N_LEDS][3] PROGMEM = {
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+    {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+// Solo el inicio de la fila 4
+const uint8_t RAYO_F1[N_LEDS][3] PROGMEM = {
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	
+	// Comienzo del rayo 
+	{0,0,0}, {0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+//  Cae a la Fila 5
+const uint8_t RAYO_F2[N_LEDS][3] PROGMEM = {
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	
+	// La fila 4 del rayo se mantiene
+	{0,0,0}, {0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	// Fila 5: El rayo se extiende
+	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+// El rayo cae de la fila 3 a la fila 6
+const uint8_t RAYO_F3[N_LEDS][3] PROGMEM = {
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	
+	// Fila 4
+	{0,0,0}, {0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	// Fila 5
+	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	// Fila 6 ( ahí el rayo se extiende)
+	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+// El rayo cae de la fila 4 a la fila 7
+const uint8_t RAYO_F4[N_LEDS][3] PROGMEM = {
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	
+	// Fila 4
+	{0,0,0}, {0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},
+	// Fila 5
+	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	// Fila 6
+	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
+	// Fila 7 (el rayo termina de caer)
+	{0,0,0}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}
+};
+
+// Array de punteros a los frames del rayo (8 frames)
+const PGM_P RAYO_FRAMES[NUM_FRAMES_RAYO] = {
+	(PGM_P)RAYO_F1,     // Frame 0: Caída (Inicio)
+	(PGM_P)RAYO_F2,     // Frame 1: Caída (Medio)
+	(PGM_P)RAYO_F3,     // Frame 2: Caída (Casi completo)
+	(PGM_P)RAYO_F4,     // Frame 3: Caída (Completo)
+    (PGM_P)RAYO_F_OFF,  // Frame 4: Desaparición (Apagado)
+    (PGM_P)RAYO_F_OFF,  // Frame 5: Desaparición (Pausa)
+    (PGM_P)RAYO_F_OFF,  // Frame 6: Desaparición (Pausa)
+    (PGM_P)RAYO_F_OFF   // Frame 7: Desaparición (Pausa)
 };
 
 
-const uint8_t RAYO_FRAME_1[N_LEDS][3] PROGMEM = {
-	
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	
-	{0,0,0}, {0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}  
-};
-
-
-const uint8_t RAYO_FRAME_2[N_LEDS][3] PROGMEM = {
-	
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0},
-	
-	{0,0,0}, {0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO},{C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {C_RAYO_AMARILLO}, {C_RAYO_AMARILLO},{C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0},{0,0,0}, 
-	{0,0,0}, {C_RAYO_AMARILLO},{C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, 
-	{0,0,0}, {C_RAYO_AMARILLO}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}  
-};
-
-
+// Frames de la lluvia
 #define L_C 50, 100, 200
 #define N_C 0, 0, 0
 
@@ -279,13 +375,13 @@ const uint8_t LLUVIA_FRAME_0[N_LEDS][3] PROGMEM = {
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
-	// Fila 4
+	
 	{N_C}, {L_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {L_C},
-	// Fila 5
+	
 	{N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {L_C}, {N_C}, {N_C},
-	// Fila 6
+	
 	{L_C}, {N_C}, {L_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
-	// Fila 7
+	
 	{N_C}, {N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {L_C}, {N_C}
 };
 
@@ -295,13 +391,13 @@ const uint8_t LLUVIA_FRAME_1[N_LEDS][3] PROGMEM = {
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
-	// Fila 4
+	
 	{L_C}, {N_C}, {N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {N_C},
-	// Fila 5
+
 	{N_C}, {L_C}, {N_C}, {N_C}, {L_C}, {N_C}, {N_C}, {L_C},
-	// Fila 6
+	
 	{N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {L_C}, {N_C}, {N_C},
-	// Fila 7
+	
 	{L_C}, {N_C}, {L_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}
 };
 
@@ -311,13 +407,13 @@ const uint8_t LLUVIA_FRAME_2[N_LEDS][3] PROGMEM = {
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
-	// Fila 4
+	
 	{N_C}, {N_C}, {L_C}, {N_C}, {N_C}, {N_C}, {L_C}, {N_C},
-	// Fila 5
+	
 	{L_C}, {N_C}, {N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {N_C},
-	// Fila 6
+	
 	{N_C}, {L_C}, {N_C}, {N_C}, {L_C}, {N_C}, {N_C}, {L_C},
-	// Fila 7
+	
 	{N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {L_C}, {N_C}, {N_C}
 };
 
@@ -327,18 +423,18 @@ const uint8_t LLUVIA_FRAME_3[N_LEDS][3] PROGMEM = {
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
 	{N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C}, {N_C},
-	// Fila 4
+	
 	{N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {L_C}, {N_C}, {N_C},
-	// Fila 5
+	
 	{N_C}, {N_C}, {L_C}, {N_C}, {N_C}, {N_C}, {L_C}, {N_C},
-	// Fila 6
+	
 	{L_C}, {N_C}, {N_C}, {N_C}, {N_C}, {L_C}, {N_C}, {N_C},
-	// Fila 7
+	
 	{N_C}, {L_C}, {N_C}, {N_C}, {L_C}, {N_C}, {N_C}, {L_C}
 };
 
 
-const PGM_P LLUVIA_FRAMES[NUM_FRAMES_TORMENTA] = {
+const PGM_P LLUVIA_FRAMES[NUM_FRAMES_LLUVIA] = {
 	(PGM_P)LLUVIA_FRAME_0,
 	(PGM_P)LLUVIA_FRAME_1,
 	(PGM_P)LLUVIA_FRAME_2,
@@ -347,10 +443,12 @@ const PGM_P LLUVIA_FRAMES[NUM_FRAMES_TORMENTA] = {
 
 
 // Función para combinar la nube con el rayo y junto con la lluvia
-void combinar_tormenta(uint8_t frame_lluvia_idx) {
+void combinar_tormenta(uint8_t frame_lluvia_idx, uint8_t frame_rayo_idx) {
 	
-	const uint8_t (*rayo_frame)[3] PROGMEM = (frame_lluvia_idx % 2 == 0) ? RAYO_FRAME_1 : RAYO_FRAME_2;
+	// Utiliza el array de frames de rayo para la animación de caída/desaparición
+	const uint8_t (*rayo_frame)[3] PROGMEM = (const uint8_t (*)[3])RAYO_FRAMES[frame_rayo_idx];
 	
+	// La lluvia sigue ciclando de 0 a 3
 	const uint8_t (*lluvia_frame)[3] PROGMEM = (const uint8_t (*)[3])LLUVIA_FRAMES[frame_lluvia_idx];
 	
 	for(uint8_t i = 0; i < N_LEDS; i++) {
@@ -387,7 +485,7 @@ void combinar_tormenta(uint8_t frame_lluvia_idx) {
 
 void manejar_animacion(void) {
 	
-	uint16_t ritmo_actual = RITMO_ANIMACION_LENTO; 
+	uint16_t ritmo_actual = RITMO_ANIMACION_LENTO;
 
 	
 	if (animacion_actual == '2') {
@@ -404,22 +502,33 @@ void manejar_animacion(void) {
 	if (animacion_actual == '1') {
 		
 		if (frame_actual >= NUM_FRAMES_ARBOL) {
-			frame_actual = 0; 
+			frame_actual = 0;
 		}
 		
 		if (frame_actual == 0) {
 			combinar_luces(LUCES_FRAME1);
 			} else if (frame_actual == 1) {
 			combinar_luces(LUCES_FRAME2);
+			} else if (frame_actual == 2) {
+			combinar_luces(LUCES_FRAME3);
+			} else if (frame_actual == 3) {
+			combinar_luces(LUCES_FRAME4);
 		}
 		
 		} else if (animacion_actual == '2') {
 		
-		if (frame_actual >= NUM_FRAMES_TORMENTA) {
+		// El frame_actual corre de 0 a 7
+		if (frame_actual >= NUM_FRAMES_RAYO) { 
 			frame_actual = 0;
 		}
 		
-		combinar_tormenta(frame_actual);
+		
+		uint8_t frame_lluvia_idx = frame_actual % NUM_FRAMES_LLUVIA; 
+		
+		
+		uint8_t frame_rayo_idx = frame_actual;
+
+		combinar_tormenta(frame_lluvia_idx, frame_rayo_idx);
 		
 		} else if (animacion_actual == '0') {
 		
