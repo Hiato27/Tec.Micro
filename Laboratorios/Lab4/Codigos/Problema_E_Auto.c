@@ -27,10 +27,14 @@ char uart_read(void) {
 
 void pwm_init(void) {
 	DDRB |= (1 << PB1) | (1 << PB2);
+
 	TCCR1A = (1 << WGM10);
 	TCCR1B = (1 << WGM12);
+
 	TCCR1A |= (1 << COM1A1) | (1 << COM1B1);
-	TCCR1B |= (1 << CS11) | (1 << CS10); // Prescaler 64
+
+	TCCR1B |= (1 << CS11) | (1 << CS10);
+
 	OCR1A = 0;
 	OCR1B = 0;
 }
@@ -66,10 +70,51 @@ void ejecutar_comando(char c) {
 		motor_der(255);
 		break;
 
+		case 'I':
+		direccion_adelante();
+		motor_izq(255);
+		motor_der(255 / 2);
+		break;
+
+		case 'R':
+		direccion_adelante();
+		motor_izq(255);
+		motor_der(0);
+		break;
+
+		case 'H':
+		direccion_adelante();
+		motor_der(255);
+		motor_izq(255 / 2);
+		break;
+
+		case 'L':
+		direccion_adelante();
+		motor_der(255);
+		motor_izq(0);
+		break;
+
 		case 'G':
 		direccion_atras();
 		motor_izq(255);
 		motor_der(255);
+		break;
+
+		case 'K':
+		direccion_atras();
+		motor_izq(255);
+		motor_der(255 / 2);
+		break;
+
+		case 'J':
+		direccion_atras();
+		motor_der(255);
+		motor_izq(255 / 2);
+		break;
+
+		case 'S':
+		motor_izq(0);
+		motor_der(0);
 		break;
 
 		default:
@@ -83,7 +128,7 @@ int main(void) {
 	direccion_init();
 
 	while (1) {
-		char c = uart_read(); // Espera un carácter de UART
+		char c = uart_read();
 		ejecutar_comando(c);
 	}
 }
